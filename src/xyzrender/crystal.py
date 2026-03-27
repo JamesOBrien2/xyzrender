@@ -168,3 +168,136 @@ def add_crystal_images(graph: nx.Graph, crystal_data: CellData) -> int:
 
     logger.debug("Added %d image atoms", n_added)
     return n_added
+
+
+def expand_supercell(
+    graph: nx.Graph,
+    crystal_data: CellData,
+    supercell: int | tuple[int, int, int],
+) -> int:
+    """Add all atoms from neighbouring unit cells to form an expanded supercell view.
+
+    Unlike :func:`add_crystal_images` (which adds only atoms bonded to the central
+    cell), this function populates the graph with **every** atom from each expanded
+    cell so that complete molecules are visible across cell boundaries.
+
+    Parameters
+    ----------
+    supercell:
+        Number of extra cells to show in each direction.  An integer *N* is
+        shorthand for ``(N, N, N)``.  A 3-tuple ``(na, nb, nc)`` sets per-axis
+        expansion independently: the cell is expanded ±na along **a**, ±nb along
+        **b**, and ±nc along **c**.  E.g. ``supercell=1`` → 3×3×3 = 27 cells;
+        ``supercell=(1, 1, 0)`` → 3×3×1 = 9 cells.
+
+    Returns
+    -------
+    int
+        Number of image atoms added to the graph.
+
+    Notes
+    -----
+    Added nodes carry ``image=True``, ``source=<original_cell_atom_id>``, and
+    ``shift=(dx, dy, dz)`` (fractional offsets).  All added edges carry
+    ``image_bond=True``.  Intra-cell bonds are replicated for each copy of the
+    cell.  Cross-cell bonds between adjacent expanded cells are detected with the
+    same :func:`_is_bonded` logic used by :func:`add_crystal_images`.
+    """
+    # Normalise supercell parameter
+    if isinstance(supercell, int):
+        na, nb, nc = supercell, supercell, supercell
+    else:
+        na, nb, nc = int(supercell[0]), int(supercell[1]), int(supercell[2])
+
+    if na == 0 and nb == 0 and nc == 0:
+        return 0
+
+    lattice = crystal_data.lattice  # (3, 3)
+    a, b, c = lattice[0], lattice[1], lattice[2]
+
+    cell_ids = list(graph.nodes())
+    if not cell_ids:
+        return 0
+
+    cell_syms = {i: graph.nodes[i]["symbol"] for i in cell_ids}
+    cell_pos = {i: np.array(graph.nodes[i]["position"]) for i in cell_ids}
+    cell_edges = list(graph.edges(data=True))
+
+    next_id = max(cell_ids) + 1
+    n_added = 0
+
+    # Map from shift → {original_id: new_node_id}
+    # Central cell (0,0,0) maps to itself.
+    shift_to_nodemap: dict[tuple[int, int, int], dict[int, int]] = {
+        (0, 0, 0): {i: i for i in cell_ids},
+    }
+
+    all_shifts = [
+        (dx, dy, dz)
+        for dx in range(-na, na + 1)
+        for dy in range(-nb, nb + 1)
+        for dz in range(-nc, nc + 1)
+    ]
+    image_shifts = [s for s in all_shifts if s != (0, 0, 0)]
+
+    # --- Step 1: add all image atoms and replicate intra-cell bonds ---
+    for shift in image_shifts:
+        dx, dy, dz = shift
+        offset = dx * a + dy * b + dz * c
+        nodemap: dict[int, int] = {}
+
+        for src_id in cell_ids:
+            img_pos = cell_pos[src_id] + offset
+            img_id = next_id
+            next_id += 1
+            n_added += 1
+            graph.add_node(
+                img_id,
+                symbol=cell_syms[src_id],
+                position=(float(img_pos[0]), float(img_pos[1]), float(img_pos[2])),
+                image=True,
+                source=src_id,
+                shift=shift,
+            )
+            nodemap[src_id] = img_id
+
+        shift_to_nodemap[shift] = nodemap
+
+        # Replicate all intra-cell bonds within this shifted copy
+        for ai, aj, edge_data in cell_edges:
+            new_ai = nodemap[ai]
+            new_aj = nodemap[aj]
+            graph.add_edge(new_ai, new_aj, bond_order=edge_data.get("bond_order", 1.0), image_bond=True)
+
+    # --- Step 2: cross-cell bonds between adjacent shifts ---
+    # Two shifts are "adjacent" if they differ by at most 1 in every axis.
+    # Iterate ordered pairs to avoid checking the same pair twice.
+    for idx_a, shift_a in enumerate(all_shifts):
+        for shift_b in all_shifts[idx_a + 1 :]:
+            diff = (
+                abs(shift_a[0] - shift_b[0]),
+                abs(shift_a[1] - shift_b[1]),
+                abs(shift_a[2] - shift_b[2]),
+            )
+            if max(diff) != 1:
+                # Non-adjacent cells cannot share bonds (too far apart)
+                continue
+
+            nodemap_a = shift_to_nodemap[shift_a]
+            nodemap_b = shift_to_nodemap[shift_b]
+
+            for src_a, node_a in nodemap_a.items():
+                pos_a = np.array(graph.nodes[node_a]["position"])
+                sym_a = cell_syms[src_a]
+
+                for src_b, node_b in nodemap_b.items():
+                    if graph.has_edge(node_a, node_b):
+                        continue
+                    pos_b = np.array(graph.nodes[node_b]["position"])
+                    sym_b = cell_syms[src_b]
+                    dist = float(np.linalg.norm(pos_a - pos_b))
+                    if _is_bonded(sym_a, sym_b, dist):
+                        graph.add_edge(node_a, node_b, bond_order=1.0, image_bond=True)
+
+    logger.debug("expand_supercell: added %d image atoms (supercell=%s)", n_added, (na, nb, nc))
+    return n_added

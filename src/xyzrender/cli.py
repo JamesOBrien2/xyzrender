@@ -50,6 +50,24 @@ def _parse_pairs(s: str) -> list[tuple[int, int]]:
     return pairs
 
 
+def _parse_supercell(s: str | None) -> int | tuple[int, int, int] | None:
+    """Parse --supercell argument: 'N' → int N; 'Na,Nb,Nc' → (Na, Nb, Nc); None → None."""
+    if s is None:
+        return None
+    parts = [p.strip() for p in s.split(",")]
+    if len(parts) == 1:
+        try:
+            return int(parts[0])
+        except ValueError:
+            raise ValueError(f"--supercell expects an integer or Na,Nb,Nc triple, got: {s!r}") from None
+    if len(parts) == 3:
+        try:
+            return (int(parts[0]), int(parts[1]), int(parts[2]))
+        except ValueError:
+            raise ValueError(f"--supercell Na,Nb,Nc values must be integers, got: {s!r}") from None
+    raise ValueError(f"--supercell expects N or Na,Nb,Nc, got: {s!r}")
+
+
 def _parse_indices(s: str) -> list[int]:
     """Parse '1-20,25,30' → [0..19, 24, 29] (1-indexed input → 0-indexed)."""
     if not s.strip():
@@ -422,6 +440,19 @@ def main() -> None:
             "Each digit is one Miller index (0-9). Requires --crystal or --cell."
         ),
     )
+    crystal_g.add_argument(
+        "--supercell",
+        default=None,
+        metavar="N or Na,Nb,Nc",
+        help=(
+            "Expand the crystal view by ±N cells in each direction, showing complete "
+            "molecules across cell boundaries. A single integer N expands by ±N in all "
+            "three axes (e.g. --supercell 1 gives a 3×3×3 view). A comma-separated "
+            "triple Na,Nb,Nc sets per-axis expansion independently "
+            "(e.g. --supercell 1,1,0 for ±1 along a and b only). "
+            "Requires --crystal or --cell."
+        ),
+    )
 
     args = p.parse_args()
     from xyzrender import configure_logging
@@ -695,6 +726,7 @@ def main() -> None:
             cell_color=args.cell_color,
             cell_width=args.cell_width,
             ghost_opacity=args.ghost_opacity,
+            supercell=_parse_supercell(args.supercell),
             mo=args.mo,
             dens=args.dens,
             esp=args.esp,
@@ -771,6 +803,7 @@ def main() -> None:
                 cell_color=args.cell_color,
                 cell_width=args.cell_width,
                 ghost_opacity=args.ghost_opacity,
+                supercell=_parse_supercell(args.supercell),
                 vector=args.vector,
                 vector_scale=args.vector_scale,
             )

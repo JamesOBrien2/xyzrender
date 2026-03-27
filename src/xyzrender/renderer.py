@@ -115,14 +115,24 @@ def render_svg(graph, config: RenderConfig | None = None, *, _log: bool = True, 
     if cfg.esp_surface is not None:
         extra_lo = np.array([cfg.esp_surface.x_min, cfg.esp_surface.y_min])
         extra_hi = np.array([cfg.esp_surface.x_max, cfg.esp_surface.y_max])
-    # Expand canvas to encompass the unit cell box when crystal mode is active
+    # Expand canvas to encompass the unit cell box (and supercell boxes) when crystal mode is active
     if cfg.cell_data is not None and cfg.show_cell:
         lat = cfg.cell_data.lattice
         a_vec, b_vec, c_vec = lat[0], lat[1], lat[2]
         orig3d = cfg.cell_data.cell_origin
-        box_verts = np.array(
-            [orig3d + i * a_vec + j * b_vec + k * c_vec for i, j, k in itertools.product((0, 1), repeat=3)]
-        )
+        # Determine the full extent of cells to draw
+        if cfg.supercell is not None:
+            na, nb, nc = cfg.supercell
+        else:
+            na, nb, nc = 0, 0, 0
+        all_cell_verts = []
+        for dx in range(-na, na + 1):
+            for dy in range(-nb, nb + 1):
+                for dz in range(-nc, nc + 1):
+                    sc_orig = orig3d + dx * a_vec + dy * b_vec + dz * c_vec
+                    for i, j, k in itertools.product((0, 1), repeat=3):
+                        all_cell_verts.append(sc_orig + i * a_vec + j * b_vec + k * c_vec)
+        box_verts = np.array(all_cell_verts)
         box_lo = box_verts[:, :2].min(axis=0)
         box_hi = box_verts[:, :2].max(axis=0)
         extra_lo = np.minimum(extra_lo, box_lo) if extra_lo is not None else box_lo
@@ -530,6 +540,49 @@ def render_svg(graph, config: RenderConfig | None = None, *, _log: bool = True, 
                 f'stroke="{cfg.cell_color}" stroke-width="{cell_lw:.1f}" '
                 f'stroke-dasharray="{cell_dash}" stroke-linecap="round"/>'
             )
+
+        # --- Supercell expanded boxes (one per neighbouring cell) ---
+        if cfg.supercell is not None:
+            na, nb, nc = cfg.supercell
+            sc_op = cfg.periodic_image_opacity
+            svg.append("  <!-- supercell boxes -->")
+            for dx in range(-na, na + 1):
+                for dy in range(-nb, nb + 1):
+                    for dz in range(-nc, nc + 1):
+                        if (dx, dy, dz) == (0, 0, 0):
+                            continue
+                        sc_orig = orig3d + dx * a_vec + dy * b_vec + dz * c_vec
+                        sc_verts: dict[tuple[int, int, int], tuple[float, float]] = {}
+                        for i, j, k in itertools.product((0, 1), repeat=3):
+                            p3d = sc_orig + i * a_vec + j * b_vec + k * c_vec
+                            sc_verts[(i, j, k)] = _proj(p3d, scale, cx, cy, canvas_w, canvas_h)
+                        # Edges along a
+                        for j, k in itertools.product((0, 1), repeat=2):
+                            x1, y1 = sc_verts[(0, j, k)]
+                            x2, y2 = sc_verts[(1, j, k)]
+                            svg.append(
+                                f'  <line class="supercell-edge" x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
+                                f'stroke="{cfg.cell_color}" stroke-width="{cell_lw:.1f}" '
+                                f'stroke-dasharray="{cell_dash}" stroke-linecap="round" opacity="{sc_op:.2f}"/>'
+                            )
+                        # Edges along b
+                        for i, k in itertools.product((0, 1), repeat=2):
+                            x1, y1 = sc_verts[(i, 0, k)]
+                            x2, y2 = sc_verts[(i, 1, k)]
+                            svg.append(
+                                f'  <line class="supercell-edge" x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
+                                f'stroke="{cfg.cell_color}" stroke-width="{cell_lw:.1f}" '
+                                f'stroke-dasharray="{cell_dash}" stroke-linecap="round" opacity="{sc_op:.2f}"/>'
+                            )
+                        # Edges along c
+                        for i, j in itertools.product((0, 1), repeat=2):
+                            x1, y1 = sc_verts[(i, j, 0)]
+                            x2, y2 = sc_verts[(i, j, 1)]
+                            svg.append(
+                                f'  <line class="supercell-edge" x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
+                                f'stroke="{cfg.cell_color}" stroke-width="{cell_lw:.1f}" '
+                                f'stroke-dasharray="{cell_dash}" stroke-linecap="round" opacity="{sc_op:.2f}"/>'
+                            )
 
     # NCI patches are z-sorted into the atom/bond loop so they appear at the correct
     # depth (in the interstitial space) rather than covering the whole molecule.

@@ -437,6 +437,7 @@ class RenderConfig:
     cell_color: str = "#333333"
     cell_line_width: float = 2.0
     periodic_image_opacity: float = 0.5
+    supercell: tuple[int, int, int] | None = None  # expand ±na/nb/nc cells per axis
     axis_colors: tuple[str, str, str] = (
         "firebrick",
         "forestgreen",

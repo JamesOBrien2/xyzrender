@@ -295,3 +295,114 @@ def test_orient_hkl_cell_corotates_with_ghost_atoms(vasp_crystal):
     frac = np.linalg.solve(cell_data.lattice.T, com - cell_data.cell_origin)
     assert np.all(frac > -0.5), f"COM fractional coords {frac} are far outside the cell after rotation"
     assert np.all(frac < 1.5), f"COM fractional coords {frac} are far outside the cell after rotation"
+
+
+# ---------------------------------------------------------------------------
+# Supercell expansion tests
+# ---------------------------------------------------------------------------
+
+
+def test_expand_supercell_atom_count(vasp_crystal):
+    """expand_supercell(1,1,1) adds exactly 26 * N_cell image atoms."""
+    from xyzrender.crystal import expand_supercell
+
+    graph, cell_data = copy.deepcopy(vasp_crystal)
+    n_cell = graph.number_of_nodes()
+    n_added = expand_supercell(graph, cell_data, 1)
+    assert n_added == 26 * n_cell, f"Expected {26 * n_cell} image atoms, got {n_added}"
+
+
+def test_expand_supercell_all_image_flagged(vasp_crystal):
+    """All nodes added by expand_supercell carry image=True."""
+    from xyzrender.crystal import expand_supercell
+
+    graph, cell_data = copy.deepcopy(vasp_crystal)
+    n_cell = graph.number_of_nodes()
+    expand_supercell(graph, cell_data, 1)
+    for node_id, attrs in graph.nodes(data=True):
+        if node_id >= n_cell:
+            assert attrs.get("image") is True, f"Node {node_id} missing image=True"
+
+
+def test_expand_supercell_per_axis(vasp_crystal):
+    """supercell=(1,0,0) adds exactly 2 * N_cell image atoms (±1 along a only)."""
+    from xyzrender.crystal import expand_supercell
+
+    graph, cell_data = copy.deepcopy(vasp_crystal)
+    n_cell = graph.number_of_nodes()
+    n_added = expand_supercell(graph, cell_data, (1, 0, 0))
+    assert n_added == 2 * n_cell, f"Expected {2 * n_cell} image atoms, got {n_added}"
+
+
+def test_expand_supercell_zero_noop(vasp_crystal):
+    """expand_supercell with (0,0,0) is a no-op — no atoms added."""
+    from xyzrender.crystal import expand_supercell
+
+    graph, cell_data = copy.deepcopy(vasp_crystal)
+    n_before = graph.number_of_nodes()
+    n_added = expand_supercell(graph, cell_data, (0, 0, 0))
+    assert n_added == 0
+    assert graph.number_of_nodes() == n_before
+
+
+def test_expand_supercell_shift_attribute(vasp_crystal):
+    """Image atoms from expand_supercell store the correct shift attribute."""
+    from xyzrender.crystal import expand_supercell
+
+    graph, cell_data = copy.deepcopy(vasp_crystal)
+    n_cell = graph.number_of_nodes()
+    expand_supercell(graph, cell_data, (1, 0, 0))
+    shifts_seen = set()
+    for node_id, attrs in graph.nodes(data=True):
+        if node_id >= n_cell:
+            shift = attrs.get("shift")
+            assert shift is not None, f"Node {node_id} missing shift attribute"
+            shifts_seen.add(shift)
+    # Only shifts ±1 along a, 0 along b and c
+    assert shifts_seen == {(-1, 0, 0), (1, 0, 0)}, f"Unexpected shifts: {shifts_seen}"
+
+
+def test_expand_supercell_svg_central_cell_box(vasp_crystal):
+    """SVG with supercell still renders exactly 12 central cell-edge lines."""
+    from xyzrender.crystal import expand_supercell
+    from xyzrender.renderer import render_svg
+    from xyzrender.types import RenderConfig
+
+    graph, cell_data = copy.deepcopy(vasp_crystal)
+    expand_supercell(graph, cell_data, 1)
+    cfg = RenderConfig(cell_data=cell_data, show_cell=True, supercell=(1, 1, 1))
+    svg = render_svg(graph, cfg)
+    cell_lines = [ln for ln in svg.splitlines() if 'class="cell-edge"' in ln]
+    assert len(cell_lines) == 12, f"Expected 12 central cell edges, got {len(cell_lines)}"
+
+
+def test_expand_supercell_svg_neighbour_boxes(vasp_crystal):
+    """SVG with supercell=(1,1,1) renders 26 * 12 supercell-edge lines."""
+    from xyzrender.crystal import expand_supercell
+    from xyzrender.renderer import render_svg
+    from xyzrender.types import RenderConfig
+
+    graph, cell_data = copy.deepcopy(vasp_crystal)
+    expand_supercell(graph, cell_data, 1)
+    cfg = RenderConfig(cell_data=cell_data, show_cell=True, supercell=(1, 1, 1))
+    svg = render_svg(graph, cfg)
+    sc_lines = [ln for ln in svg.splitlines() if 'class="supercell-edge"' in ln]
+    assert len(sc_lines) == 26 * 12, f"Expected {26 * 12} supercell edges, got {len(sc_lines)}"
+
+
+def test_expand_supercell_image_opacity(vasp_crystal):
+    """Image atoms from expand_supercell render at periodic_image_opacity."""
+    from xyzrender.crystal import expand_supercell
+    from xyzrender.renderer import render_svg
+    from xyzrender.types import RenderConfig
+
+    graph, cell_data = copy.deepcopy(vasp_crystal)
+    expand_supercell(graph, cell_data, 1)
+    cfg = RenderConfig(
+        cell_data=cell_data,
+        show_cell=True,
+        supercell=(1, 1, 1),
+        periodic_image_opacity=0.3,
+    )
+    svg = render_svg(graph, cfg)
+    assert 'opacity="0.30"' in svg, "Expected opacity=0.30 for image atoms"

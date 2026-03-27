@@ -514,6 +514,7 @@ def render(
     cell_color: str | None = None,
     cell_width: float | None = None,
     ghost_opacity: float | None = None,
+    supercell: int | tuple[int, int, int] | None = None,
     # --- Rendering overlays (1-indexed atom numbering) ---
     ts_bonds: list[tuple[int, int]] | None = None,
     nci_bonds: list[tuple[int, int]] | None = None,
@@ -789,6 +790,7 @@ def render(
             cell_width=cell_width,
             ghost_opacity=ghost_opacity,
             bo_explicit=bo,
+            supercell=supercell,
         )
         if bo is None and not cfg.bond_orders:
             logger.warning("Periodic structure: bond orders disabled by default (pass bo=True to override)")
@@ -1017,6 +1019,7 @@ def render_gif(
     cell_color: str | None = None,
     cell_width: float | None = None,
     ghost_opacity: float | None = None,
+    supercell: int | tuple[int, int, int] | None = None,
 ) -> GIFResult:
     """Render a molecule to an animated GIF and return a :class:`GIFResult`.
 
@@ -1296,6 +1299,7 @@ def render_gif(
                 cell_width=cell_width,
                 ghost_opacity=ghost_opacity,
                 bo_explicit=bo,
+                supercell=supercell,
             )
             ref_graph = _gif_mol.graph
         # Build surface params when a cube is present
@@ -1649,6 +1653,13 @@ def _combine_vector_sources(
             )
 
 
+def _norm_supercell(s: int | tuple[int, int, int]) -> tuple[int, int, int]:
+    """Normalise a supercell spec to a (na, nb, nc) 3-tuple."""
+    if isinstance(s, int):
+        return (s, s, s)
+    return (int(s[0]), int(s[1]), int(s[2]))
+
+
 def _apply_cell_config(
     mol: Molecule,
     cfg: RenderConfig,
@@ -1660,6 +1671,7 @@ def _apply_cell_config(
     cell_width: float | None,
     ghost_opacity: float | None,
     bo_explicit: bool | None,
+    supercell: int | tuple[int, int, int] | None = None,
 ) -> None:
     """Configure crystal/cell display options on *cfg* from *mol.cell_data*."""
     cell_data = mol.cell_data
@@ -1686,12 +1698,22 @@ def _apply_cell_config(
         orient_hkl_to_view(mol.graph, cell_data, axis, cfg)
         cfg.auto_orient = False
 
-    # Ghost (periodic image) atoms — default: on when cell_data is present
-    _show_ghosts = ghosts if ghosts is not None else True
-    if _show_ghosts:
-        from xyzrender.crystal import add_crystal_images
+    if supercell is not None:
+        # Supercell expansion: populate all atoms from neighbouring cells.
+        # This supersedes ghost-atom mode (no double-adding).
+        from xyzrender.crystal import expand_supercell
 
-        add_crystal_images(mol.graph, cell_data)
+        sc_norm = _norm_supercell(supercell)
+        cfg.supercell = sc_norm
+        if any(n > 0 for n in sc_norm):
+            expand_supercell(mol.graph, cell_data, sc_norm)
+    else:
+        # Ghost (periodic image) atoms — default: on when cell_data is present
+        _show_ghosts = ghosts if ghosts is not None else True
+        if _show_ghosts:
+            from xyzrender.crystal import add_crystal_images
+
+            add_crystal_images(mol.graph, cell_data)
 
     # Default no-bo for periodic structures (bond orders are not PBC-aware)
     if bo_explicit is None:
