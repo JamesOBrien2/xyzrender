@@ -345,6 +345,18 @@ def test_expand_supercell_zero_noop(vasp_crystal):
     assert graph.number_of_nodes() == n_before
 
 
+def test_expand_supercell_negative_raises(vasp_crystal):
+    """expand_supercell raises ValueError for negative supercell values."""
+    import pytest
+    from xyzrender.crystal import expand_supercell
+
+    graph, cell_data = copy.deepcopy(vasp_crystal)
+    with pytest.raises(ValueError, match="non-negative"):
+        expand_supercell(graph, cell_data, -1)
+    with pytest.raises(ValueError, match="non-negative"):
+        expand_supercell(graph, cell_data, (1, -1, 0))
+
+
 def test_expand_supercell_shift_attribute(vasp_crystal):
     """Image atoms from expand_supercell store the correct shift attribute."""
     from xyzrender.crystal import expand_supercell

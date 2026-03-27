@@ -209,6 +209,10 @@ def expand_supercell(
     else:
         na, nb, nc = int(supercell[0]), int(supercell[1]), int(supercell[2])
 
+    if any(n < 0 for n in (na, nb, nc)):
+        msg = f"supercell values must be non-negative integers, got ({na}, {nb}, {nc})"
+        raise ValueError(msg)
+
     if na == 0 and nb == 0 and nc == 0:
         return 0
 
@@ -270,33 +274,31 @@ def expand_supercell(
             graph.add_edge(new_ai, new_aj, bond_order=edge_data.get("bond_order", 1.0), image_bond=True)
 
     # --- Step 2: cross-cell bonds between adjacent shifts ---
-    # Two shifts are "adjacent" if they differ by at most 1 in every axis.
-    # Iterate ordered pairs to avoid checking the same pair twice.
+    # Build a position cache so we don't reconstruct numpy arrays in the inner loop.
+    all_node_pos: dict[int, np.ndarray] = {
+        nid: np.array(attrs["position"]) for nid, attrs in graph.nodes(data=True)
+    }
+
+    # Two shifts are "adjacent" when their Chebyshev distance is exactly 1
+    # (i.e. they share a face, edge, or corner).  Iterate ordered pairs only.
     for idx_a, shift_a in enumerate(all_shifts):
         for shift_b in all_shifts[idx_a + 1 :]:
-            diff = (
-                abs(shift_a[0] - shift_b[0]),
-                abs(shift_a[1] - shift_b[1]),
-                abs(shift_a[2] - shift_b[2]),
-            )
-            if max(diff) != 1:
-                # Non-adjacent cells cannot share bonds (too far apart)
+            if max(abs(shift_a[k] - shift_b[k]) for k in range(3)) != 1:
+                # Cells more than one step apart cannot share bonds.
                 continue
 
             nodemap_a = shift_to_nodemap[shift_a]
             nodemap_b = shift_to_nodemap[shift_b]
 
             for src_a, node_a in nodemap_a.items():
-                pos_a = np.array(graph.nodes[node_a]["position"])
+                pos_a = all_node_pos[node_a]
                 sym_a = cell_syms[src_a]
 
                 for src_b, node_b in nodemap_b.items():
                     if graph.has_edge(node_a, node_b):
                         continue
-                    pos_b = np.array(graph.nodes[node_b]["position"])
-                    sym_b = cell_syms[src_b]
-                    dist = float(np.linalg.norm(pos_a - pos_b))
-                    if _is_bonded(sym_a, sym_b, dist):
+                    dist = float(np.linalg.norm(pos_a - all_node_pos[node_b]))
+                    if _is_bonded(sym_a, cell_syms[src_b], dist):
                         graph.add_edge(node_a, node_b, bond_order=1.0, image_bond=True)
 
     logger.debug("expand_supercell: added %d image atoms (supercell=%s)", n_added, (na, nb, nc))

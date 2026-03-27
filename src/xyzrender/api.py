@@ -627,6 +627,14 @@ def render(
         Fill opacity for all hull surfaces.
     hull_edge, hull_edge_width_ratio:
         Draw hull edges that are not bonds as thin lines.
+    supercell:
+        Expand the crystal view by ±N cells per axis (requires *cell_data* on
+        the molecule).  An integer *N* expands equally in all three directions;
+        a 3-tuple ``(na, nb, nc)`` sets per-axis expansion independently.
+        E.g. ``supercell=1`` → 3×3×3 = 27 cells; ``supercell=(1, 1, 0)`` →
+        3×3×1 = 9 cells.  Expanded cells are rendered at
+        ``ghost_opacity`` and each has its own wireframe box.  When set,
+        supersedes the default ghost-atom mode.
 
     Returns
     -------
@@ -1704,8 +1712,8 @@ def _apply_cell_config(
         from xyzrender.crystal import expand_supercell
 
         sc_norm = _norm_supercell(supercell)
-        cfg.supercell = sc_norm
         if any(n > 0 for n in sc_norm):
+            cfg.supercell = sc_norm
             expand_supercell(mol.graph, cell_data, sc_norm)
     else:
         # Ghost (periodic image) atoms — default: on when cell_data is present

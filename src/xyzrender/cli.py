@@ -55,16 +55,16 @@ def _parse_supercell(s: str | None) -> int | tuple[int, int, int] | None:
     if s is None:
         return None
     parts = [p.strip() for p in s.split(",")]
-    if len(parts) == 1:
-        try:
-            return int(parts[0])
-        except ValueError:
-            raise ValueError(f"--supercell expects an integer or Na,Nb,Nc triple, got: {s!r}") from None
-    if len(parts) == 3:
-        try:
-            return (int(parts[0]), int(parts[1]), int(parts[2]))
-        except ValueError:
-            raise ValueError(f"--supercell Na,Nb,Nc values must be integers, got: {s!r}") from None
+    try:
+        values = [int(p) for p in parts]
+    except ValueError:
+        raise ValueError(f"--supercell expects non-negative integer(s), got: {s!r}") from None
+    if any(v < 0 for v in values):
+        raise ValueError(f"--supercell values must be non-negative, got: {s!r}")
+    if len(values) == 1:
+        return values[0]
+    if len(values) == 3:
+        return (values[0], values[1], values[2])
     raise ValueError(f"--supercell expects N or Na,Nb,Nc, got: {s!r}")
 
 
