@@ -153,10 +153,10 @@ def _muted_pastel_color(hex_color: str) -> str:
     from xyzrender.colors import Color
 
     c = Color.from_str(hex_color)
-    h, l, s = c.to_hls()
-    l = min(1.0, l + 0.18 * (1.0 - l))
+    h, lightness, s = c.to_hls()
+    lightness = min(1.0, lightness + 0.18 * (1.0 - lightness))
     s = max(0.20, s * 0.58)
-    return Color.from_hls(h, l, s).hex
+    return Color.from_hls(h, lightness, s).hex
 
 
 def assign_chain_colors(cfg: "RenderConfig", chain_ids: list[str], style: str | None = None) -> dict[str, str]:
@@ -309,7 +309,7 @@ def _ss_spline_steps(base_steps: int, ss_type: str) -> int:
     if ss_type == "H":
         return max(6, min(12, base_steps + 1))
     if ss_type == "E":
-        return max(3, min(5, int(round(base_steps * 0.35))))
+        return max(3, min(5, round(base_steps * 0.35)))
     return base_steps
 
 
@@ -442,7 +442,7 @@ def _compute_normals_mixed(
         for i in range(n):
             acc = np.zeros(3, dtype=float)
             wsum = 0.0
-            for off, w in zip(offsets, weights):
+            for off, w in zip(offsets, weights, strict=False):
                 j = i + off
                 if 0 <= j < n:
                     acc += normals[j] * w
@@ -885,7 +885,19 @@ def _continuous_segment_items(
         tip = p_tip_ca + tangent * (np.linalg.norm(p_tip_ca - p_base) * _ARROW_TIP_FRAC)
         b_base = normals[e - 1] * sheet_half * _ARROW_FLANGE
         arrow = np.array([p_base + b_base, p_base - b_base, tip])
-        items.append(_triangle_polygon_svg(arrow, sheet_fill, sheet_outline, scale, cx, cy, canvas_w, canvas_h, stroke_width=_sheet_sw))
+        items.append(
+            _triangle_polygon_svg(
+                arrow,
+                sheet_fill,
+                sheet_outline,
+                scale,
+                cx,
+                cy,
+                canvas_w,
+                canvas_h,
+                stroke_width=_sheet_sw,
+            )
+        )
 
     return items
 

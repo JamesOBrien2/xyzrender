@@ -24,7 +24,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _WATER_RESNAMES: frozenset[str] = frozenset({"HOH", "WAT", "DOD", "H2O", "TIP", "TIP3", "SOL"})
-_ION_RESNAMES: frozenset[str] = frozenset({"NA", "K", "CA", "MG", "ZN", "CL", "FE", "CU", "MN", "CO", "NI", "SO4", "PO4"})
+_ION_RESNAMES: frozenset[str] = frozenset(
+    {"NA", "K", "CA", "MG", "ZN", "CL", "FE", "CU", "MN", "CO", "NI", "SO4", "PO4"}
+)
 
 
 def from_protein_data(data: "ProteinData", *, provenance: str = "pdb") -> ProteinSemantics:
@@ -72,7 +74,7 @@ def _to_xyzrender_semantics(xg_sem: Any) -> ProteinSemantics:
             if residues_obj is None:
                 residues_obj = []
             for r in residues_obj:
-                get = r.get if isinstance(r, dict) else lambda k, default=None: getattr(r, k, default)
+                get = r.get if isinstance(r, dict) else lambda k, default=None, _r=r: getattr(_r, k, default)
                 residues.append(
                     ResidueData(
                         res_name=str(get("res_name", "UNK")),
@@ -86,7 +88,11 @@ def _to_xyzrender_semantics(xg_sem: Any) -> ProteinSemantics:
                         ss_type=str(get("ss_type", "C")),
                     )
                 )
-            chain_id = str(getattr(chain_obj, "chain_id", None) or (chain_obj.get("chain_id") if isinstance(chain_obj, dict) else cid) or cid)
+            chain_id = str(
+                getattr(chain_obj, "chain_id", None)
+                or (chain_obj.get("chain_id") if isinstance(chain_obj, dict) else cid)
+                or cid
+            )
             chains[str(cid)] = ChainData(chain_id=chain_id, residues=residues)
 
     get_top = xg_sem.get if isinstance(xg_sem, dict) else lambda k, default=None: getattr(xg_sem, k, default)
@@ -129,11 +135,11 @@ def _parse_extxyz_annotation_rows(path: Path) -> list[dict[str, object]] | None:
         if len(parts) < 4:
             return None
 
-        def _get(name: str) -> str:
+        def _get(name: str, _parts: list[str] = parts) -> str:
             offset, count = props[name]
-            if offset >= len(parts):
+            if offset >= len(_parts):
                 return ""
-            return " ".join(parts[offset : offset + count]).strip()
+            return " ".join(_parts[offset : offset + count]).strip()
 
         res_seq_raw = _get("res_seq")
         try:
@@ -477,14 +483,14 @@ def _extract_from_extxyz(path: Path) -> ProteinSemantics | None:
             continue
         if len(parts) < 4:
             return None
-        def _get(name: str) -> str:
+        def _get(name: str, _parts: list[str] = parts) -> str:
             offset, count = props[name]
             # extxyz tokens include species + xyz first (4 columns)
             # our offset is against properties vector, so shift by 0 here as species/pos are part of properties.
             idx = offset
-            if idx >= len(parts):
+            if idx >= len(_parts):
                 return ""
-            return " ".join(parts[idx : idx + count]).strip()
+            return " ".join(_parts[idx : idx + count]).strip()
 
         atom_name = _get("atom_name")
         res_name = _get("res_name")

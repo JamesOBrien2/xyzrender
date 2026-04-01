@@ -382,8 +382,9 @@ def load(
 
     elif mol_path.suffix.lower() == ".cif":
         # CIF: parse directly so atom annotations reach protein semantics.
-        import xyzrender.parsers as fmt
         from xyzgraph import build_graph
+
+        import xyzrender.parsers as fmt
         from xyzrender.types import CellData
 
         data = fmt.parse_cif(mol_path)
@@ -1647,7 +1648,11 @@ def render_gif(
         if nci_ligand_protein_only:
             _nci_sem = None
             if isinstance(molecule, Molecule):
-                _nci_sem = molecule.protein_semantics if molecule.protein_semantics is not None else molecule.protein_data
+                _nci_sem = (
+                    molecule.protein_semantics
+                    if molecule.protein_semantics is not None
+                    else molecule.protein_data
+                )
             if _nci_sem is not None:
                 from xyzrender.readers import filter_ligand_protein_nci
 
@@ -1657,7 +1662,8 @@ def render_gif(
                     logger.info("nci_ligand_protein_only filter applied for GIF; 0 NCI interactions remained")
             else:
                 logger.warning(
-                    "nci_ligand_protein_only requested for GIF but no protein/ligand semantics are available; keeping all NCI edges"
+                    "nci_ligand_protein_only requested for GIF but no protein/ligand semantics "
+                    "are available; keeping all NCI edges"
                 )
         # Build surface params when a cube is present
         mo_params = dens_params = None
@@ -1683,7 +1689,11 @@ def render_gif(
             )
         _rot_protein_data = None
         if isinstance(molecule, Molecule):
-            _rot_protein_data = molecule.protein_semantics if molecule.protein_semantics is not None else molecule.protein_data
+            _rot_protein_data = (
+                molecule.protein_semantics
+                if molecule.protein_semantics is not None
+                else molecule.protein_data
+            )
             if protein and _rot_protein_data is None:
                 from xyzrender.protein_semantics import extract_protein_semantics
 

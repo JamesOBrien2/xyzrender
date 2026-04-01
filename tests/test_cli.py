@@ -82,7 +82,6 @@ def test_cli_protein_without_style_defaults_to_gloss(monkeypatch):
 
     def _fake_render(*args, **kwargs):
         captured.update(kwargs)
-        return None
 
     monkeypatch.setattr("xyzrender.api.render", _fake_render)
     monkeypatch.setattr("xyzrender.api.load", lambda *args, **kwargs: _dummy_molecule())
@@ -101,7 +100,6 @@ def test_cli_protein_without_ghost_flag_defaults_ghosts_off(monkeypatch):
 
     def _fake_render(*args, **kwargs):
         captured.update(kwargs)
-        return None
 
     monkeypatch.setattr("xyzrender.api.render", _fake_render)
     monkeypatch.setattr("xyzrender.api.load", lambda *args, **kwargs: _dummy_cell_molecule())
@@ -120,7 +118,6 @@ def test_cli_protein_with_ghosts_flag_overrides_default(monkeypatch):
 
     def _fake_render(*args, **kwargs):
         captured.update(kwargs)
-        return None
 
     monkeypatch.setattr("xyzrender.api.render", _fake_render)
     monkeypatch.setattr("xyzrender.api.load", lambda *args, **kwargs: _dummy_cell_molecule())
@@ -139,7 +136,6 @@ def test_cli_non_protein_cell_input_keeps_ghosts_default_on(monkeypatch):
 
     def _fake_render(*args, **kwargs):
         captured.update(kwargs)
-        return None
 
     monkeypatch.setattr("xyzrender.api.render", _fake_render)
     monkeypatch.setattr("xyzrender.api.load", lambda *args, **kwargs: _dummy_cell_molecule())
@@ -158,7 +154,6 @@ def test_cli_protein_gloss_style(monkeypatch):
 
     def _fake_render(*args, **kwargs):
         captured.update(kwargs)
-        return None
 
     monkeypatch.setattr("xyzrender.api.render", _fake_render)
     monkeypatch.setattr("xyzrender.api.load", lambda *args, **kwargs: _dummy_molecule())
@@ -177,7 +172,6 @@ def test_cli_protein_illustration_style(monkeypatch):
 
     def _fake_render(*args, **kwargs):
         captured.update(kwargs)
-        return None
 
     monkeypatch.setattr("xyzrender.api.render", _fake_render)
     monkeypatch.setattr("xyzrender.api.load", lambda *args, **kwargs: _dummy_molecule())
@@ -205,7 +199,6 @@ def test_cli_highlight_ligand_flag_wires_to_render(monkeypatch):
 
     def _fake_render(*args, **kwargs):
         captured.update(kwargs)
-        return None
 
     monkeypatch.setattr("xyzrender.api.render", _fake_render)
     monkeypatch.setattr("xyzrender.api.load", lambda *args, **kwargs: _dummy_molecule())
@@ -234,7 +227,6 @@ def test_cli_halo_ligand_wires_to_render(monkeypatch):
 
     def _fake_render(*args, **kwargs):
         captured.update(kwargs)
-        return None
 
     monkeypatch.setattr("xyzrender.api.render", _fake_render)
     monkeypatch.setattr("xyzrender.api.load", lambda *args, **kwargs: _dummy_molecule())
@@ -273,7 +265,6 @@ def test_cli_nci_ligand_implies_nci_detect_for_gif(monkeypatch, tmp_path):
 
     def _fake_render_gif(*args, **kwargs):
         captured_gif.update(kwargs)
-        return None
 
     monkeypatch.setattr("xyzrender.api.load", lambda *args, **kwargs: _dummy_molecule())
     monkeypatch.setattr("xyzrender.api.render", lambda *args, **kwargs: None)
@@ -319,7 +310,6 @@ def test_cli_halo_ligand_wires_to_render_gif(monkeypatch, tmp_path):
 
     def _fake_render_gif(*args, **kwargs):
         captured_gif.update(kwargs)
-        return None
 
     monkeypatch.setattr("xyzrender.api.load", lambda *args, **kwargs: _dummy_molecule())
     monkeypatch.setattr("xyzrender.api.render", lambda *args, **kwargs: None)

@@ -165,11 +165,14 @@ def test_cif_annotations_prevent_graph_only_fallback(tmp_path, monkeypatch):
         pbc=True,
     )
     structure.set_array("atomtypes", np.array(["N", "CA", "C", "O", "N", "CA", "C", "O"], dtype=object))
-    structure.set_array("residuenames", np.array(["ALA", "ALA", "ALA", "ALA", "GLY", "GLY", "GLY", "GLY"], dtype=object))
+    structure.set_array(
+        "residuenames",
+        np.array(["ALA", "ALA", "ALA", "ALA", "GLY", "GLY", "GLY", "GLY"], dtype=object),
+    )
     structure.set_array("residuenumbers", np.array([1, 1, 1, 1, 2, 2, 2, 2], dtype=int))
     structure.set_array("chainids", np.array(["A", "A", "A", "A", "A", "A", "A", "A"], dtype=object))
 
-    def fake_read(path, format=None, **kwargs):  # noqa: ANN001
+    def fake_read(path, format=None, **kwargs):
         return structure
 
     monkeypatch.setattr(ase.io, "read", fake_read)
@@ -227,7 +230,7 @@ def test_cif_struct_conf_and_sheet_range_labels(tmp_path, monkeypatch):
     structure.info["_struct_sheet_range.beg_auth_seq_id"] = [4]
     structure.info["_struct_sheet_range.end_auth_seq_id"] = [6]
 
-    def fake_read(path, format=None, **kwargs):  # noqa: ANN001
+    def fake_read(path, format=None, **kwargs):
         assert kwargs.get("store_tags") is True
         return structure
 
@@ -245,4 +248,3 @@ def test_cif_struct_conf_and_sheet_range_labels(tmp_path, monkeypatch):
     assert labels[4] == "E"
     assert labels[5] == "E"
     assert labels[6] == "E"
-

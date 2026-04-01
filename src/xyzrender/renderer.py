@@ -345,7 +345,7 @@ def render_svg(
                     gi is not None
                     and gi == gj
                     and style == BondStyle.SOLID
-                    and (c_ov is None or c_ov == mol_bond_color or c_ov == ligand_bond_color)
+                    and (c_ov is None or c_ov in (mol_bond_color, ligand_bond_color))
                 ):
                     bonds[(i, j)] = bonds[(j, i)] = (bo, style, hl_group_bond_color[gi])
 
@@ -1283,7 +1283,8 @@ def render_svg(
                         fs_atom = _stroke_atom
                     svg.append(
                         f'  <circle cx="{xi:.1f}" cy="{yi:.1f}" r="{radii[ai] * scale:.1f}" '
-                        f'fill="url(#{grad_id})" stroke="{fs_atom}" stroke-width="{_sw_ai:.1f}"{op_attr_atom}{dof_attr}/>'
+                        f'fill="url(#{grad_id})" stroke="{fs_atom}" stroke-width="{_sw_ai:.1f}"'
+                        f"{op_attr_atom}{dof_attr}/>"
                     )
                 else:
                     fill = colors[ai].blend(WHITE, acfg.atom_wash).hex if acfg.atom_wash > 0 else _color_hex[ai]
