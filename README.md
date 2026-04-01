@@ -119,16 +119,16 @@ For the full Python API (render options, `build_config()`, `measure()`, `load()`
 
 ### Presets
 
-| Default | Flat | Paton (PyMOL-like) | Pmol | Skeletal |
-|---------|------|--------------------|------|----------|
+| Default | Flat | Paton (PyMOL-like) | Pmol | 
+|---------|------|--------------------|------|
 | ![default](examples/images/caffeine_default.svg) | ![flat](examples/images/caffeine_flat.svg) | ![paton](examples/images/caffeine_paton.svg) | ![pmol](examples/images/caffeine_pmol.svg) | 
 
-| Skeletal | Bubble | Tube | Metal Tube | Wire | Graph |
-|--------|------|------------|------|-------|
+| Skeletal | Bubble | Tube | 
+|--------|------|------------|
 | ![skeletal](examples/images/caffeine_skeletal.svg) | ![bubble](examples/images/caffeine_bubble.svg) | ![tube](examples/images/caffeine_tube.svg) | 
 
 | Wire | Graph | MTube | MTube (metal) | 
-|--|--|--|
+|--|--|--|--|
 | ![wire](examples/images/caffeine_wire.svg) | ![graph](examples/images/caffeine_graph.svg) | ![mtube](examples/images/caffeine_mtube.svg) | ![mtube](examples/images/mnh_mtube.svg) |
 
 ### Style regions
