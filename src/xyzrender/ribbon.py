@@ -591,12 +591,13 @@ def _strip_with_rails_items(
     projected_half = max(half_width * scale, _EPS)
     rail_w = max(projected_half * 0.16 * rail_scale, rail_floor_px)
     rail_w = min(rail_w, projected_half * 0.28)
-    left_rail = _polyline_svg(left, outline, rail_w, scale, cx, cy, canvas_w, canvas_h)
-    right_rail = _polyline_svg(right, outline, rail_w, scale, cx, cy, canvas_w, canvas_h)
-    if left_rail is not None:
-        items.append(left_rail)
-    if right_rail is not None:
-        items.append(right_rail)
+    if outline:
+        left_rail = _polyline_svg(left, outline, rail_w, scale, cx, cy, canvas_w, canvas_h)
+        right_rail = _polyline_svg(right, outline, rail_w, scale, cx, cy, canvas_w, canvas_h)
+        if left_rail is not None:
+            items.append(left_rail)
+        if right_rail is not None:
+            items.append(right_rail)
     return items
 
 

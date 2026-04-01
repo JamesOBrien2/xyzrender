@@ -132,7 +132,7 @@ if TYPE_CHECKING:
     from xyzgraph.nci import NCIAnalyzer
 
     from xyzrender.cube import CubeData
-    from xyzrender.types import DensParams, MOParams, ProteinData, RenderConfig
+    from xyzrender.types import DensParams, MOParams, ProteinData, ProteinSemantics, RenderConfig
 
 
 def render_vibration_gif(
@@ -307,7 +307,7 @@ def render_rotation_gif(
     mo_cube: CubeData | None = None,
     dens_params: DensParams | None = None,
     dens_cube: CubeData | None = None,
-    protein_data: "ProteinData | None" = None,
+    protein_data: "ProteinData | ProteinSemantics | None" = None,
 ) -> None:
     """Render a rotation animation as a GIF.
 
@@ -721,7 +721,7 @@ class RotationFrameContext:
     dens_cube: "CubeData | None"
     mo_cache: dict
     dens_cache: dict
-    protein_data: "ProteinData | None" = None
+    protein_data: "ProteinData | ProteinSemantics | None" = None
 
 
 def _render_rot_frame(

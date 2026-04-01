@@ -28,7 +28,7 @@ from xyzrender.mo import (
     mo_back_lobes_svg,
     mo_front_lobes_svg,
 )
-from xyzrender.types import BondStyle, RenderConfig
+from xyzrender.types import BondStyle, HaloGroup, RenderConfig
 from xyzrender.utils import pca_orient
 
 logger = logging.getLogger(__name__)
@@ -296,7 +296,7 @@ def render_svg(
                 hl_atom_group[ai] = gid
 
     # Halo map: atom_idx → HaloGroup (last group wins if an atom appears in multiple)
-    halo_atom_map: dict[int, object] = {}
+    halo_atom_map: dict[int, HaloGroup] = {}
     if cfg.halo_groups:
         for hg in cfg.halo_groups:
             for ai in hg._index_set:

@@ -908,7 +908,7 @@ def parse_cif(path: str | Path) -> MolData:
         if values is None:
             return None
         if isinstance(values, np.ndarray):
-            return values.tolist()
+            return list(np.asarray(values, dtype=object).flat)
         if isinstance(values, (list, tuple)):
             return list(values)
         return [values]
@@ -958,10 +958,16 @@ def parse_cif(path: str | Path) -> MolData:
         return s
 
     def _to_int(value: object, default: int) -> int:
-        try:
+        if isinstance(value, (int, np.integer)):
             return int(value)
-        except (TypeError, ValueError):
-            return default
+        if isinstance(value, (float, np.floating)):
+            return int(value)
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                return default
+        return default
 
     atom_names = _atom_column(
         "atomtypes",

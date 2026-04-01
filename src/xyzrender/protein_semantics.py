@@ -7,9 +7,10 @@ graph-only heuristics, with explicit confidence tiers for rendering decisions.
 from __future__ import annotations
 
 import logging
+import importlib
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -233,8 +234,12 @@ def _extract_from_xyzgraph(
     format_hint: str | None,
 ) -> ProteinSemantics | None:
     try:
-        from xyzgraph.protein import annotate_protein_semantics, protein_semantics_from_dict
+        protein_mod = importlib.import_module("xyzgraph.protein")
     except Exception:
+        return None
+    annotate_protein_semantics = getattr(protein_mod, "annotate_protein_semantics", None)
+    protein_semantics_from_dict = getattr(protein_mod, "protein_semantics_from_dict", None)
+    if annotate_protein_semantics is None or protein_semantics_from_dict is None:
         return None
 
     annotations = _canonical_annotations(moldata=moldata, source_path=source_path, format_hint=format_hint)
@@ -618,8 +623,10 @@ def extract_protein_semantics(
             return sem
 
     # Legacy fallback path (kept for compatibility with older xyzgraph versions).
-    if moldata is not None and getattr(moldata, "protein_data", None) is not None:
-        return from_protein_data(moldata.protein_data, provenance="pdb")
+    if moldata is not None:
+        legacy_protein_data = getattr(moldata, "protein_data", None)
+        if legacy_protein_data is not None:
+            return from_protein_data(cast("ProteinData", legacy_protein_data), provenance="pdb")
 
     path = Path(source_path) if source_path is not None else None
     fmt = (format_hint or (path.suffix.lower() if path is not None else "")).lower()

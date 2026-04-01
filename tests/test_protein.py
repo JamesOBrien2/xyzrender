@@ -17,6 +17,11 @@ from xyzrender.types import ChainData, ProteinData, ResidueData
 STRUCTURES = Path(__file__).parent.parent / "examples" / "structures"
 
 
+def _require_protein_data(data: ProteinData | None) -> ProteinData:
+    assert data is not None
+    return data
+
+
 # ---------------------------------------------------------------------------
 # Minimal synthetic PDB fixtures
 # ---------------------------------------------------------------------------
@@ -149,53 +154,58 @@ def hetatm_class_pdb(tmp_path):
 
 def test_parse_pdb_extracts_chain(tmp_path, helix_pdb):
     data = parse_pdb(helix_pdb)
-    assert data.protein_data is not None
-    assert "A" in data.protein_data.chains
+    pd = _require_protein_data(data.protein_data)
+    assert "A" in pd.chains
 
 
 def test_parse_pdb_residue_count(helix_pdb):
     data = parse_pdb(helix_pdb)
-    chain_a = data.protein_data.chains["A"]
+    pd = _require_protein_data(data.protein_data)
+    chain_a = pd.chains["A"]
     assert len(chain_a.residues) == 4
 
 
 def test_parse_pdb_ca_index(helix_pdb):
     data = parse_pdb(helix_pdb)
-    for res in data.protein_data.chains["A"].residues:
+    pd = _require_protein_data(data.protein_data)
+    for res in pd.chains["A"].residues:
         assert res.ca_index is not None
 
 
 def test_parse_pdb_ss_helix(helix_pdb):
     """HELIX record should set ss_type='H' on all residues."""
     data = parse_pdb(helix_pdb)
-    for res in data.protein_data.chains["A"].residues:
+    pd = _require_protein_data(data.protein_data)
+    for res in pd.chains["A"].residues:
         assert res.ss_type == "H", f"residue {res.res_seq} expected H got {res.ss_type}"
 
 
 def test_parse_pdb_ss_sheet(sheet_pdb):
     """SHEET record should set ss_type='E' on all residues."""
     data = parse_pdb(sheet_pdb)
-    for res in data.protein_data.chains["A"].residues:
+    pd = _require_protein_data(data.protein_data)
+    for res in pd.chains["A"].residues:
         assert res.ss_type == "E", f"residue {res.res_seq} expected E got {res.ss_type}"
 
 
 def test_parse_pdb_ss_default_loop():
     """Without HELIX/SHEET records, ss_type defaults to 'C'."""
     data = parse_pdb(STRUCTURES / "ala_phe_ala.pdb")
-    if data.protein_data is not None:
-        for chain in data.protein_data.chains.values():
+    pd = data.protein_data
+    if pd is not None:
+        for chain in pd.chains.values():
             for res in chain.residues:
                 assert res.ss_type == "C"
 
 
 def test_parse_pdb_hetatm_separation(hetatm_pdb):
     data = parse_pdb(hetatm_pdb)
-    assert data.protein_data is not None
+    pd = _require_protein_data(data.protein_data)
     # Indices 4 and 5 are HETATM (0-indexed)
-    assert 4 in data.protein_data.hetatm_indices
-    assert 5 in data.protein_data.hetatm_indices
+    assert 4 in pd.hetatm_indices
+    assert 5 in pd.hetatm_indices
     # Backbone atoms 0-3 should not be HETATM
-    assert 0 not in data.protein_data.hetatm_indices
+    assert 0 not in pd.hetatm_indices
 
 
 def test_parse_pdb_backbone_indices(helix_pdb):
@@ -227,8 +237,8 @@ def test_parse_pdb_two_chains(two_chain_pdb):
 
 def test_load_attaches_protein_data(helix_pdb):
     mol = load(helix_pdb)
-    assert mol.protein_data is not None
-    assert "A" in mol.protein_data.chains
+    pd = _require_protein_data(mol.protein_data)
+    assert "A" in pd.chains
 
 
 def test_load_water_pdb_loads_without_error():
@@ -271,8 +281,8 @@ def test_ribbon_helix_produces_polygons(helix_pdb):
     mol = load(helix_pdb)
     cfg = RenderConfig(protein=True)
     pos = np.array([mol.graph.nodes[i]["position"] for i in mol.graph.nodes()])
-
-    items = ribbon_svg_items(mol.protein_data, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
+    pd = _require_protein_data(mol.protein_data)
+    items = ribbon_svg_items(pd, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
     all_svg = " ".join(line for _, lines in items for line in lines)
     assert "<polygon" in all_svg
 
@@ -306,7 +316,8 @@ def test_ribbon_surface_panels_are_fill_only(helix_pdb):
     mol = load(helix_pdb)
     cfg = RenderConfig(protein=True)
     pos = np.array([mol.graph.nodes[i]["position"] for i in mol.graph.nodes()])
-    items = ribbon_svg_items(mol.protein_data, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
+    pd = _require_protein_data(mol.protein_data)
+    items = ribbon_svg_items(pd, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
     all_svg = " ".join(line for _, lines in items for line in lines)
 
     assert all_svg.count("<polygon") <= 3
@@ -347,8 +358,8 @@ def test_ribbon_sheet_produces_polygons(sheet_pdb):
     mol = load(sheet_pdb)
     cfg = RenderConfig(protein=True)
     pos = np.array([mol.graph.nodes[i]["position"] for i in mol.graph.nodes()])
-
-    items = ribbon_svg_items(mol.protein_data, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
+    pd = _require_protein_data(mol.protein_data)
+    items = ribbon_svg_items(pd, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
     all_svg = " ".join(line for _, lines in items for line in lines)
     assert "<polygon" in all_svg
 
@@ -363,8 +374,8 @@ def test_ribbon_sheet_has_reduced_panel_count(sheet_pdb):
     mol = load(sheet_pdb)
     cfg = RenderConfig(protein=True)
     pos = np.array([mol.graph.nodes[i]["position"] for i in mol.graph.nodes()])
-
-    items = ribbon_svg_items(mol.protein_data, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
+    pd = _require_protein_data(mol.protein_data)
+    items = ribbon_svg_items(pd, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
     all_svg = " ".join(line for _, lines in items for line in lines)
     poly_count = all_svg.count("<polygon")
     assert poly_count <= 12
@@ -379,10 +390,10 @@ def test_ribbon_styles_both_use_solid_helix_strips(helix_pdb):
 
     mol = load(helix_pdb)
     pos = np.array([mol.graph.nodes[i]["position"] for i in mol.graph.nodes()])
-
-    gloss_items = ribbon_svg_items(mol.protein_data, RenderConfig(protein=True), pos, 50.0, 0.0, 0.0, 800, 800)
+    pd = _require_protein_data(mol.protein_data)
+    gloss_items = ribbon_svg_items(pd, RenderConfig(protein=True), pos, 50.0, 0.0, 0.0, 800, 800)
     illustration_items = ribbon_svg_items(
-        mol.protein_data,
+        pd,
         RenderConfig(protein=True, protein_style="illustration"),
         pos,
         50.0,
@@ -406,12 +417,13 @@ def test_ribbon_loop_produces_path():
 
     # ala_phe_ala has no HELIX/SHEET → all coil
     mol = load(STRUCTURES / "ala_phe_ala.pdb")
-    if mol.protein_data is None:
+    pd = mol.protein_data
+    if pd is None:
         pytest.skip("ala_phe_ala has no chain info")
     cfg = RenderConfig(protein=True)
     pos = np.array([mol.graph.nodes[i]["position"] for i in mol.graph.nodes()])
 
-    items = ribbon_svg_items(mol.protein_data, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
+    items = ribbon_svg_items(pd, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
     all_svg = " ".join(line for _, lines in items for line in lines)
     assert "<path" in all_svg
 
@@ -505,7 +517,8 @@ def test_sheet_arrowheads_have_contour_strokes(sheet_pdb):
     cfg = RenderConfig(protein=True)
     pos = np.array([mol.graph.nodes[i]["position"] for i in mol.graph.nodes()])
 
-    items = ribbon_svg_items(mol.protein_data, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
+    pd = _require_protein_data(mol.protein_data)
+    items = ribbon_svg_items(pd, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
     triangle_polys = [
         line
         for _, lines in items
@@ -523,7 +536,8 @@ def test_ribbon_two_chains_distinct_colors(two_chain_pdb):
 
     mol = load(two_chain_pdb)
     cfg = RenderConfig(protein=True)
-    colors = assign_chain_colors(cfg, list(mol.protein_data.chains.keys()))
+    pd = _require_protein_data(mol.protein_data)
+    colors = assign_chain_colors(cfg, list(pd.chains.keys()))
     assert len(set(colors.values())) == 2, "Chains A and B should have different colours"
 
 
@@ -535,7 +549,8 @@ def test_ribbon_chain_color_override(two_chain_pdb):
 
     mol = load(two_chain_pdb)
     cfg = RenderConfig(protein=True, chain_colors={"A": resolve_color("steelblue")})
-    colors = assign_chain_colors(cfg, list(mol.protein_data.chains.keys()))
+    pd = _require_protein_data(mol.protein_data)
+    colors = assign_chain_colors(cfg, list(pd.chains.keys()))
     assert colors["A"] == resolve_color("steelblue")
 
 
@@ -550,7 +565,8 @@ def test_ribbon_items_sorted_by_z(helix_pdb):
     cfg = RenderConfig(protein=True)
     pos = np.array([mol.graph.nodes[i]["position"] for i in mol.graph.nodes()])
 
-    items = ribbon_svg_items(mol.protein_data, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
+    pd = _require_protein_data(mol.protein_data)
+    items = ribbon_svg_items(pd, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
     depths = [z for z, _ in items]
     assert depths == sorted(depths)
 
