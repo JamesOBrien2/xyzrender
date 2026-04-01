@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from xyzrender import build_config, load, measure, render
+from xyzrender import build_config, load, measure, render, render_gif
 from xyzrender.api import Molecule, SVGResult
 
 STRUCTURES = Path(__file__).parent.parent / "examples" / "structures"
@@ -27,6 +27,11 @@ def caffeine():
 @pytest.fixture(scope="module")
 def ethanol():
     return load(STRUCTURES / "ethanol.xyz")
+
+
+@pytest.fixture(scope="module")
+def caffeine_cell():
+    return load(STRUCTURES / "caffeine_cell.xyz", cell=True)
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +63,23 @@ def test_load_nci_detect():
     # nci_detect marks NCI edges; molecule must still load correctly
     mol = load(STRUCTURES / "ethanol.xyz", nci_detect=True)
     assert mol.graph.number_of_nodes() > 0
+
+
+def test_load_nci_ligand_auto_enables_detection(monkeypatch, caplog):
+    calls: dict[str, bool] = {}
+
+    def _fake_detect_nci(graph, *, protein_data=None, ligand_protein_only=False):
+        calls["called"] = True
+        calls["ligand_protein_only"] = ligand_protein_only
+        return graph
+
+    monkeypatch.setattr("xyzrender.readers.detect_nci", _fake_detect_nci)
+    with caplog.at_level("INFO"):
+        mol = load(STRUCTURES / "ethanol.xyz", nci_detect=False, nci_ligand_protein_only=True)
+    assert mol.graph.number_of_nodes() > 0
+    assert calls.get("called") is True
+    assert calls.get("ligand_protein_only") is True
+    assert "enabling nci_detect automatically" in caplog.text
 
 
 def test_load_smiles():
@@ -100,6 +122,58 @@ def test_svgresult_save(caffeine, tmp_path):
 def test_render_accepts_path():
     result = render(STRUCTURES / "ethanol.xyz", orient=False)
     assert isinstance(result, SVGResult)
+
+
+def test_render_protein_default_ghosts_off_for_cell_data(monkeypatch, caffeine_cell):
+    captured: dict[str, bool] = {}
+
+    def _fake_apply_cell_config(*args, **kwargs):
+        captured["ghosts"] = kwargs["ghosts"]
+        raise RuntimeError("__ghost_probe__")
+
+    monkeypatch.setattr("xyzrender.api._apply_cell_config", _fake_apply_cell_config)
+    with pytest.raises(RuntimeError, match="__ghost_probe__"):
+        render(caffeine_cell, orient=False, protein=True)
+    assert captured["ghosts"] is False
+
+
+def test_render_protein_explicit_ghosts_true_overrides_default(monkeypatch, caffeine_cell):
+    captured: dict[str, bool] = {}
+
+    def _fake_apply_cell_config(*args, **kwargs):
+        captured["ghosts"] = kwargs["ghosts"]
+        raise RuntimeError("__ghost_probe__")
+
+    monkeypatch.setattr("xyzrender.api._apply_cell_config", _fake_apply_cell_config)
+    with pytest.raises(RuntimeError, match="__ghost_probe__"):
+        render(caffeine_cell, orient=False, protein=True, ghosts=True)
+    assert captured["ghosts"] is True
+
+
+def test_render_non_protein_cell_default_keeps_ghosts_on(monkeypatch, caffeine_cell):
+    captured: dict[str, bool] = {}
+
+    def _fake_apply_cell_config(*args, **kwargs):
+        captured["ghosts"] = kwargs["ghosts"]
+        raise RuntimeError("__ghost_probe__")
+
+    monkeypatch.setattr("xyzrender.api._apply_cell_config", _fake_apply_cell_config)
+    with pytest.raises(RuntimeError, match="__ghost_probe__"):
+        render(caffeine_cell, orient=False, protein=False)
+    assert captured["ghosts"] is True
+
+
+def test_render_gif_protein_default_ghosts_off_for_cell_data(monkeypatch, caffeine_cell, tmp_path):
+    captured: dict[str, bool] = {}
+
+    def _fake_apply_cell_config(*args, **kwargs):
+        captured["ghosts"] = kwargs["ghosts"]
+        raise RuntimeError("__ghost_probe__")
+
+    monkeypatch.setattr("xyzrender.api._apply_cell_config", _fake_apply_cell_config)
+    with pytest.raises(RuntimeError, match="__ghost_probe__"):
+        render_gif(caffeine_cell, gif_rot="y", protein=True, output=tmp_path / "probe.gif")
+    assert captured["ghosts"] is False
 
 
 def test_render_accepts_molecule(caffeine):
@@ -362,6 +436,21 @@ def test_build_config_returns_render_config():
 
     cfg = build_config("default")
     assert isinstance(cfg, RenderConfig)
+
+
+def test_resolve_protein_mode_defaults_to_gloss():
+    from xyzrender.api import _resolve_protein_mode
+
+    assert _resolve_protein_mode(True) == (True, "gloss")
+    assert _resolve_protein_mode("gloss") == (True, "gloss")
+    assert _resolve_protein_mode("illustration") == (True, "illustration")
+
+
+def test_resolve_protein_mode_rejects_removed_styles():
+    from xyzrender.api import _resolve_protein_mode
+
+    with pytest.raises(ValueError, match="unknown style"):
+        _resolve_protein_mode("cartoon")
 
 
 # ---------------------------------------------------------------------------

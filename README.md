@@ -157,9 +157,9 @@ For the full Python API (render options, `build_config()`, `measure()`, `load()`
 
 ### Highlight & molecule color
 
-| Default (orchid) | Custom colour | Multi-group | Mol color + highlight |
-|------------------|---------------|-------------|-----------------------|
-| ![hl](examples/images/caffeine_hl.svg) | ![hl custom](examples/images/caffeine_hl_custom.svg) | ![multi hl](examples/images/caffeine_multi_hl.svg) | ![mol color hl](examples/images/caffeine_mol_color_hl_idx.svg) |
+| Default (orchid) | Custom colour | Multi-group | Mol color + highlight | Halo |
+|------------------|---------------|-------------|-----------------------|------|
+| ![hl](examples/images/caffeine_hl.svg) | ![hl custom](examples/images/caffeine_hl_custom.svg) | ![multi hl](examples/images/caffeine_multi_hl.svg) | ![mol color hl](examples/images/caffeine_mol_color_hl_idx.svg) | ![halo](examples/images/caffeine_halo.svg) |
 
 ### Depth of field
 
@@ -226,6 +226,12 @@ For the full Python API (render options, `build_config()`, `measure()`, `load()`
 | Unit cell | Rotation | VASP | Supercell 2×2×1 | Viewing direction |
 |-----------|----------|------|-----------------|-------------------|
 | ![cell](examples/images/caffeine_cell.svg) | ![cell rot](examples/images/caffeine_cell.gif) | ![vasp](examples/images/NV63_vasp.svg) | ![supercell](examples/images/NV63_cell_supercell_221.svg) | ![111](examples/images/NV63_111.gif) |
+
+### Protein visualisation
+
+| Gloss | Illustration | Ligand highlight | Ligand NCI | Ligand NCI (custom colour) |
+|-------|--------------|------------------|------------|----------------------------|
+| ![protein gloss](examples/images/protein_gloss.svg) | ![protein illustration](examples/images/protein_illustration.svg) | ![protein highlight ligand](examples/images/protein_highlight_ligand.svg) | ![protein nci ligand](examples/images/protein_nci_ligand.svg) | ![protein nci ligand custom](examples/images/protein_nci_ligand_custom_color.svg) |
 
 ### GIF animations
 

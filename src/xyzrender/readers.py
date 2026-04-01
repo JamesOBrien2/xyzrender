@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     import networkx as nx
 
     from xyzrender.cube import CubeData
+    from xyzrender.types import ProteinData, ProteinSemantics
 
 _Atoms: TypeAlias = list[tuple[str, tuple[float, float, float]]]
 
@@ -263,7 +264,7 @@ def load_molecule(
             rebuild=rebuild,
             quick=quick,
         )
-    elif p.endswith(".cif"):
+    elif p.lower().endswith(".cif"):
         data = fmt.parse_cif(p)
         # CIF is always periodic — bond orders are always suppressed at render time
         graph = build_graph(data.atoms, charge=charge, multiplicity=multiplicity, kekule=kekule, quick=True)
@@ -488,7 +489,79 @@ def load_ts_molecule(
 # ---------------------------------------------------------------------------
 
 
-def detect_nci(graph: nx.Graph) -> nx.Graph:
+def filter_ligand_protein_nci(graph: nx.Graph, protein_data: "ProteinData | ProteinSemantics") -> nx.Graph:
+    """Keep ligand-associated protein NCI components and drop all other NCI edges.
+
+    Parameters
+    ----------
+    graph:
+        Graph that already contains ``NCI=True`` edges.
+    protein_data:
+        Protein metadata from PDB parsing.
+
+    Returns
+    -------
+    networkx.Graph
+        Filtered graph.  Isolated NCI centroid dummy nodes are removed.
+    """
+    import networkx as nx
+
+    ligand = set(getattr(protein_data, "ligand_indices", set()))
+    protein: set[int] = set()
+    chains = getattr(protein_data, "chains", {})
+    for chain in chains.values():
+        for res in chain.residues:
+            protein.update(res.atom_indices)
+    for idxs in getattr(protein_data, "trace_chains", {}).values():
+        protein.update(idxs)
+    if not protein:
+        protein.update(getattr(protein_data, "backbone_indices", set()))
+        protein.update(getattr(protein_data, "sidechain_indices", set()))
+    protein.difference_update(ligand)
+
+    out = graph.copy()
+    nci_edges = [(i, j) for i, j, data in out.edges(data=True) if data.get("NCI", False)]
+    if not nci_edges:
+        return out
+
+    nci_sub = nx.Graph()
+    nci_sub.add_edges_from(nci_edges)
+
+    def _cls(node: int) -> str:
+        if node in ligand:
+            return "ligand"
+        if node in protein:
+            return "protein"
+        return "other"
+
+    keep_nci_edges: set[tuple[int, int]] = set()
+    for component_nodes in nx.connected_components(nci_sub):
+        classes = {_cls(node) for node in component_nodes}
+        if "ligand" not in classes or "protein" not in classes:
+            continue
+        comp = nci_sub.subgraph(component_nodes)
+        keep_nci_edges.update((min(i, j), max(i, j)) for i, j in comp.edges())
+
+    for i, j, data in list(out.edges(data=True)):
+        if not data.get("NCI", False):
+            continue
+        if (min(i, j), max(i, j)) not in keep_nci_edges:
+            out.remove_edge(i, j)
+
+    # Pi-system centroid dummy nodes ("*") can become isolated after filtering.
+    orphan_centroids = [n for n, d in out.nodes(data=True) if d.get("symbol") == "*" and out.degree(n) == 0]
+    if orphan_centroids:
+        out.remove_nodes_from(orphan_centroids)
+
+    return out
+
+
+def detect_nci(
+    graph: nx.Graph,
+    *,
+    protein_data: "ProteinData | ProteinSemantics | None" = None,
+    ligand_protein_only: bool = False,
+) -> nx.Graph:
     """Detect non-covalent interactions and return a decorated graph.
 
     Uses xyzgraph's NCI detection algorithm.  Returns a new graph with
@@ -499,6 +572,12 @@ def detect_nci(graph: nx.Graph) -> nx.Graph:
     ----------
     graph:
         Molecular graph built by xyzgraph (e.g. from :func:`load_molecule`).
+
+    protein_data:
+        Optional protein metadata. Required when ``ligand_protein_only=True``.
+    ligand_protein_only:
+        Keep only ligand-associated protein NCI components. Components
+        that do not contain both ligand and protein context are dropped.
 
     Returns
     -------
@@ -511,6 +590,16 @@ def detect_nci(graph: nx.Graph) -> nx.Graph:
     logger.info("Detecting NCI interactions")
     detect_ncis(graph)
     nci_graph = build_nci_graph(graph)
+    if ligand_protein_only:
+        if protein_data is None:
+            logger.warning(
+                "ligand_protein_only requested but no protein/ligand semantics are available; leaving all NCI edges"
+            )
+        else:
+            nci_graph = filter_ligand_protein_nci(nci_graph, protein_data)
+            n_after_filter = sum(1 for _, _, d in nci_graph.edges(data=True) if d.get("NCI"))
+            if n_after_filter == 0:
+                logger.info("ligand_protein_only filter applied; 0 NCI interactions remained")
     n_nci = sum(1 for _, _, d in nci_graph.edges(data=True) if d.get("NCI"))
     logger.info("Detected %d NCI interactions", n_nci)
     return nci_graph

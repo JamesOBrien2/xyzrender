@@ -42,13 +42,33 @@ if TYPE_CHECKING:
     import networkx as nx
 
     from xyzrender.cube import CubeData
-    from xyzrender.types import CellData, VectorArrow
+    from xyzrender.types import CellData, ProteinData, ProteinSemantics, VectorArrow
 
 from xyzrender.colors import resolve_color
+from xyzrender.ribbon import default_ribbon_style, normalize_ribbon_style, ribbon_style_names
 from xyzrender.types import GIFResult, RenderConfig, SVGResult
 from xyzrender.utils import parse_atom_indices
 
 logger = logging.getLogger(__name__)
+_PROTEIN_STYLES = set(ribbon_style_names(include_aliases=True))
+
+
+def _resolve_protein_mode(protein: bool | str | None) -> tuple[bool, str]:
+    """Normalise protein mode input to (enabled, style)."""
+    default_style = default_ribbon_style()
+    if protein is True:
+        return True, default_style
+    if protein in (False, None):
+        return False, default_style
+    if isinstance(protein, str):
+        style = protein.strip().lower()
+        if style in _PROTEIN_STYLES:
+            return True, normalize_ribbon_style(style)
+        valid = ", ".join(sorted(_PROTEIN_STYLES))
+        msg = f"protein: unknown style {protein!r} (valid: {valid})"
+        raise ValueError(msg)
+    msg = "protein: expected bool or style string"
+    raise ValueError(msg)
 
 
 @dataclass
@@ -103,6 +123,9 @@ class Molecule:
     cell_data: CellData | None = None
     oriented: bool = False
     ensemble: EnsembleFrames | None = None
+    protein_data: "ProteinData | None" = None
+    protein_semantics: "ProteinSemantics | None" = None
+    source_path: str | None = None
 
     def to_xyz(self, path: str | os.PathLike, title: str = "") -> None:
         """Write the molecule to an XYZ file.
@@ -163,6 +186,7 @@ def load(
     ts_detect: bool = False,
     ts_frame: int = 0,
     nci_detect: bool = False,
+    nci_ligand_protein_only: bool = False,
     cell: bool = False,
     quick: bool = False,
     bohr: bool | None = None,
@@ -208,6 +232,10 @@ def load(
         Detect non-covalent interactions with xyzgraph after loading.
         When used with ``ensemble=True``, NCI detection is run on
         each frame independently.
+    nci_ligand_protein_only:
+        Keep only ligand-associated protein NCI contacts. When this is
+        ``True`` and *nci_detect* is ``False``, NCI detection is enabled
+        automatically.
     cell:
         Read the periodic cell box from an extXYZ ``Lattice=`` header and
         store it on the returned :class:`Molecule`.
@@ -245,6 +273,10 @@ def load(
     Molecule
     """
     # --- Ensemble: load multi-frame trajectory as merged molecule ---
+    if nci_ligand_protein_only and not nci_detect:
+        logger.info("nci_ligand_protein_only requested; enabling nci_detect automatically")
+        nci_detect = True
+
     if ensemble:
         return _build_ensemble_molecule(
             molecule,
@@ -264,6 +296,7 @@ def load(
             rebuild=rebuild,
             quick=quick,
             nci_detect=nci_detect,
+            nci_ligand_protein_only=nci_ligand_protein_only,
             reference_mol=reference_mol,
         )
 
@@ -273,6 +306,8 @@ def load(
     mol_path = Path(str(molecule))
     cube_data = None
     cell_data = None
+    protein_data = None
+    protein_semantics = None
     graph = None
 
     if smiles:
@@ -287,6 +322,9 @@ def load(
             rebuild=rebuild,
             quick=quick,
         )
+        from xyzrender.protein_semantics import extract_protein_semantics
+
+        protein_semantics = extract_protein_semantics(graph, moldata=data, source_path=None, format_hint=".smi")
     elif not Path(mol_path).is_file():
         raise FileNotFoundError(f"[Errno 2] No such file or directory: '{mol_path}'")
 
@@ -312,6 +350,56 @@ def load(
             kekule=kekule,
         )
 
+    elif mol_path.suffix.lower() == ".pdb":
+        # PDB: parse directly so we can capture protein metadata alongside graph.
+        import xyzrender.parsers as fmt
+        from xyzrender.readers import graph_from_moldata
+        from xyzrender.types import CellData
+
+        data = fmt.parse_pdb(mol_path)
+        _pdb_quick = quick or data.pbc_cell is not None
+        graph = graph_from_moldata(
+            data,
+            charge=charge,
+            multiplicity=multiplicity,
+            kekule=kekule,
+            rebuild=rebuild,
+            quick=_pdb_quick,
+        )
+        protein_data = data.protein_data
+        from xyzrender.protein_semantics import extract_protein_semantics
+
+        protein_semantics = extract_protein_semantics(
+            graph,
+            moldata=data,
+            source_path=mol_path,
+            format_hint=".pdb",
+        )
+        if data.pbc_cell is not None:
+            centroid = np.array([pos for _, pos in data.atoms], dtype=float).mean(axis=0)
+            cell_origin = centroid - 0.5 * data.pbc_cell.sum(axis=0)
+            cell_data = CellData(lattice=data.pbc_cell, cell_origin=cell_origin)
+
+    elif mol_path.suffix.lower() == ".cif":
+        # CIF: parse directly so atom annotations reach protein semantics.
+        import xyzrender.parsers as fmt
+        from xyzgraph import build_graph
+        from xyzrender.types import CellData
+
+        data = fmt.parse_cif(mol_path)
+        graph = build_graph(data.atoms, charge=charge, multiplicity=multiplicity, kekule=kekule, quick=True)
+        assert data.pbc_cell is not None
+        cell_data = CellData(lattice=data.pbc_cell)
+
+        from xyzrender.protein_semantics import extract_protein_semantics
+
+        protein_semantics = extract_protein_semantics(
+            graph,
+            moldata=data,
+            source_path=mol_path,
+            format_hint=mol_path.suffix.lower(),
+        )
+
     else:
         from xyzrender.readers import load_molecule
 
@@ -325,9 +413,16 @@ def load(
             quick=quick,
             bohr=bohr,
         )
+        from xyzrender.protein_semantics import extract_protein_semantics
+
+        protein_semantics = extract_protein_semantics(
+            graph,
+            source_path=mol_path,
+            format_hint=mol_path.suffix.lower(),
+        )
 
     # Auto-promote: any file that carried lattice data (extXYZ Lattice=, PDB CRYST1, CIF)
-    # exposes it as cell_data so render() applies crystal display automatically.
+    # exposes it as cell_data for optional crystal rendering.
     if cell_data is None and graph is not None and "lattice" in graph.graph:
         from xyzrender.types import CellData
 
@@ -341,9 +436,21 @@ def load(
     if nci_detect:
         from xyzrender.readers import detect_nci
 
-        graph = detect_nci(graph)
+        _nci_sem = protein_semantics if protein_semantics is not None else protein_data
+        graph = detect_nci(
+            graph,
+            protein_data=_nci_sem,
+            ligand_protein_only=nci_ligand_protein_only,
+        )
 
-    return Molecule(graph=graph, cube_data=cube_data, cell_data=cell_data)
+    return Molecule(
+        graph=graph,
+        cube_data=cube_data,
+        cell_data=cell_data,
+        protein_data=protein_data,
+        protein_semantics=protein_semantics,
+        source_path=str(mol_path) if not smiles else None,
+    )
 
 
 def orient(mol: Molecule) -> None:
@@ -523,6 +630,23 @@ def render(
     overlay_color: str | None = None,
     # --- Alignment (overlay subset alignment) ---
     align_atoms: str | list[int] | None = None,
+    # --- Protein ribbon ---
+    protein: bool | str = False,
+    chain_colors: dict[str, str] | None = None,
+    exclude_chains: str | list[str] | None = None,
+    ribbon_width: float | None = None,
+    loop_width: float | None = None,
+    sidechain: bool = False,
+    # --- Ligands ---
+    ligand_highlight: bool = False,
+    ligand_color: str | None = None,
+    # --- NCI bond filtering ---
+    nci_ligand_protein_only: bool = False,
+    # --- Atom halos ---
+    halo: "str | list[int] | list[list[int] | str] | list[tuple] | None" = None,
+    halo_opacity: float | None = None,
+    halo_scale: float | None = None,
+    halo_blur: bool | None = None,
     # --- Output ---
     output: str | os.PathLike | None = None,
 ) -> SVGResult:
@@ -724,7 +848,19 @@ def render(
         cfg.mol_color = resolve_color(mol_color)
 
     # --- Highlight ---
-    _apply_highlight(cfg, highlight=highlight)
+    _sem_for_selectors = mol.protein_semantics if mol.protein_semantics is not None else mol.protein_data
+    _apply_highlight(cfg, highlight=highlight, protein_data=_sem_for_selectors)
+
+    # --- Halos ---
+    _apply_halo(
+        cfg,
+        halo=halo,
+        halo_opacity=halo_opacity,
+        halo_scale=halo_scale,
+        halo_blur=halo_blur,
+        protein_data=_sem_for_selectors,
+        ligand_color=ligand_color,
+    )
 
     # --- Style regions (user + preset-defined) ---
     _apply_style_regions(cfg, mol.graph, regions=regions)
@@ -754,6 +890,31 @@ def render(
     if surface_style is not None:
         cfg.surface_style = surface_style
 
+    # --- Protein ribbon ---
+    _protein_enabled, _protein_style = _resolve_protein_mode(protein)
+    if _protein_enabled:
+        cfg.protein = True
+        cfg.protein_style = _protein_style
+    if chain_colors is not None:
+        from xyzrender.colors import resolve_color as _rc
+
+        cfg.chain_colors = {k: _rc(v) for k, v in chain_colors.items()}
+    if ribbon_width is not None:
+        cfg.ribbon_width = ribbon_width
+    if loop_width is not None:
+        cfg.loop_width = loop_width
+    if sidechain:
+        cfg.show_sidechain = True
+    if exclude_chains is not None:
+        if isinstance(exclude_chains, str):
+            cfg.exclude_chains = {c.strip() for c in exclude_chains.split(",") if c.strip()}
+        else:
+            cfg.exclude_chains = {c for c in exclude_chains if c}
+    if ligand_highlight:
+        cfg.ligand_highlight = True
+    if ligand_color is not None:
+        cfg.ligand_color = resolve_color(ligand_color)
+
     # --- Never mutate mol — work on a render-time copy ---
     # resolve_orientation() (called by every compute_*_surface) writes PCA-rotated
     # positions back into the graph in-place and add_crystal_images() appends ghost
@@ -765,7 +926,27 @@ def render(
         cube_data=mol.cube_data,  # read-only - no copy needed
         cell_data=copy.deepcopy(mol.cell_data) if mol.cell_data is not None else None,
         oriented=mol.oriented,
+        protein_data=mol.protein_data,  # read-only — indices into original graph
+        protein_semantics=copy.deepcopy(mol.protein_semantics) if mol.protein_semantics is not None else None,
+        source_path=mol.source_path,
     )
+
+    # Protein semantics confidence gating:
+    # - use extracted metadata semantics if available
+    # - only run heuristics when protein rendering is explicitly requested
+    if cfg.protein:
+        from xyzrender.protein_semantics import extract_protein_semantics
+        from xyzrender.types import ProteinConfidence
+
+        if rmol.protein_semantics is None or rmol.protein_semantics.confidence_tier == ProteinConfidence.INSUFFICIENT:
+            rmol.protein_semantics = extract_protein_semantics(
+                rmol.graph,
+                source_path=rmol.source_path,
+                protein_requested=True,
+            )
+        if rmol.protein_semantics is not None:
+            for reason in rmol.protein_semantics.confidence_reasons:
+                logger.info("protein semantics: %s", reason)
 
     # --- Orientation reference ---
     if ref is not None:
@@ -819,6 +1000,9 @@ def render(
     )
 
     # --- Cell / crystal config ---
+    # Explicit user choice wins. In protein mode, default ghosts off; otherwise
+    # preserve legacy behavior (on for cell-bearing inputs).
+    _show_ghosts = ghosts if ghosts is not None else (False if cfg.protein else (rmol.cell_data is not None))
     if rmol.cell_data is not None:
         _apply_cell_config(
             rmol,
@@ -826,7 +1010,7 @@ def render(
             no_cell=no_cell,
             axis=axis,
             supercell=supercell,
-            ghosts=ghosts,
+            ghosts=_show_ghosts,
             cell_color=cell_color,
             cell_width=cell_width,
             ghost_opacity=ghost_opacity,
@@ -981,8 +1165,24 @@ def render(
 
         apply_bond_rules(rmol.graph, cfg)
 
+    # --- Optional NCI edge filtering (ligand↔protein only) ---
+    if nci_ligand_protein_only:
+        _nci_sem = rmol.protein_semantics if rmol.protein_semantics is not None else rmol.protein_data
+        if _nci_sem is None:
+            logger.warning(
+                "nci_ligand_protein_only requested but no protein/ligand semantics are available; keeping all NCI edges"
+            )
+        else:
+            from xyzrender.readers import filter_ligand_protein_nci
+
+            rmol.graph = filter_ligand_protein_nci(rmol.graph, _nci_sem)
+            n_after_filter = sum(1 for _, _, d in rmol.graph.edges(data=True) if d.get("NCI", False))
+            if n_after_filter == 0:
+                logger.info("nci_ligand_protein_only filter applied; 0 NCI interactions remained")
+
     # --- Render ---
-    svg = render_svg(rmol.graph, cfg)
+    _sem = rmol.protein_semantics if rmol.protein_semantics is not None else rmol.protein_data
+    svg = render_svg(rmol.graph, cfg, protein_data=_sem)
 
     # --- Write output ---
     if output is not None:
@@ -1065,6 +1265,7 @@ def render_gif(
     reference_graph: "nx.Graph | None" = None,
     # --- NCI detection (gif_ts / gif_trj / gif_rot) ---
     detect_nci: bool = False,
+    nci_ligand_protein_only: bool = False,
     # --- Vector arrows (gif_rot only) ---
     vector: str | Path | dict | list[VectorArrow] | None = None,
     vector_scale: float | None = None,
@@ -1095,6 +1296,21 @@ def render_gif(
     cell_color: str | None = None,
     cell_width: float | None = None,
     ghost_opacity: float | None = None,
+    # --- Atom halos ---
+    halo: "str | list[int] | list[list[int] | str] | list[tuple] | None" = None,
+    halo_opacity: float | None = None,
+    halo_scale: float | None = None,
+    halo_blur: bool | None = None,
+    # --- Protein ribbon ---
+    protein: bool | str = False,
+    chain_colors: dict[str, str] | None = None,
+    exclude_chains: str | list[str] | None = None,
+    ribbon_width: float | None = None,
+    loop_width: float | None = None,
+    sidechain: bool = False,
+    # --- Ligands ---
+    ligand_highlight: bool = False,
+    ligand_color: str | None = None,
 ) -> GIFResult:
     """Render a molecule to an animated GIF and return a :class:`GIFResult`.
 
@@ -1146,6 +1362,10 @@ def render_gif(
         msg = "render_gif: set gif_rot, gif_trj=True, gif_ts=True, or gif_diffuse=True"
         raise ValueError(msg)
 
+    if nci_ligand_protein_only and not detect_nci:
+        logger.info("nci_ligand_protein_only requested for GIF; enabling detect_nci automatically")
+        detect_nci = True
+
     if gif_ts and gif_trj:
         msg = "render_gif: gif_ts and gif_trj are mutually exclusive"
         raise ValueError(msg)
@@ -1186,7 +1406,8 @@ def render_gif(
         logger.warning("rot_frames has no effect without gif_rot")
 
     # Resolve config
-    _gif_graph = molecule.graph if isinstance(molecule, Molecule) else load(molecule).graph
+    _gif_mol = molecule if isinstance(molecule, Molecule) else load(molecule)
+    _gif_graph = _gif_mol.graph
     if not isinstance(config, str):
         cfg = copy.copy(config)
         cfg.vectors = list(cfg.vectors)
@@ -1231,7 +1452,44 @@ def render_gif(
         cfg.mol_color = resolve_color(mol_color)
 
     # --- Highlight ---
-    _apply_highlight(cfg, highlight=highlight)
+    _sem_for_selectors = _gif_mol.protein_semantics if _gif_mol.protein_semantics is not None else _gif_mol.protein_data
+    _apply_highlight(cfg, highlight=highlight, protein_data=_sem_for_selectors)
+
+    # --- Halos ---
+    _apply_halo(
+        cfg,
+        halo=halo,
+        halo_opacity=halo_opacity,
+        halo_scale=halo_scale,
+        halo_blur=halo_blur,
+        protein_data=_sem_for_selectors,
+        ligand_color=ligand_color,
+    )
+
+    # --- Protein ribbon ---
+    _protein_enabled, _protein_style = _resolve_protein_mode(protein)
+    if _protein_enabled:
+        cfg.protein = True
+        cfg.protein_style = _protein_style
+    if chain_colors is not None:
+        from xyzrender.colors import resolve_color as _rc
+
+        cfg.chain_colors = {k: _rc(v) for k, v in chain_colors.items()}
+    if ribbon_width is not None:
+        cfg.ribbon_width = ribbon_width
+    if loop_width is not None:
+        cfg.loop_width = loop_width
+    if sidechain:
+        cfg.show_sidechain = True
+    if exclude_chains is not None:
+        if isinstance(exclude_chains, str):
+            cfg.exclude_chains = {c.strip() for c in exclude_chains.split(",") if c.strip()}
+        else:
+            cfg.exclude_chains = {c for c in exclude_chains if c}
+    if ligand_highlight:
+        cfg.ligand_highlight = True
+    if ligand_color is not None:
+        cfg.ligand_color = resolve_color(ligand_color)
 
     # --- Style regions (user + preset-defined) ---
     _apply_style_regions(cfg, _gif_graph, regions=regions)
@@ -1434,7 +1692,14 @@ def render_gif(
 
         cube_data = molecule.cube_data if isinstance(molecule, Molecule) else None
 
-        # Apply crystal/cell config when the molecule carries cell_data
+        # Apply crystal/cell config when the molecule carries cell_data.
+        # Explicit user choice wins. In protein mode, default ghosts off;
+        # otherwise preserve legacy behavior (on for cell-bearing inputs).
+        _show_ghosts = (
+            ghosts
+            if ghosts is not None
+            else (False if cfg.protein else (isinstance(molecule, Molecule) and molecule.cell_data is not None))
+        )
         if isinstance(molecule, Molecule) and molecule.cell_data is not None:
             _gif_mol = Molecule(
                 graph=ref_graph,
@@ -1448,13 +1713,28 @@ def render_gif(
                 no_cell=no_cell,
                 axis=axis,
                 supercell=supercell,
-                ghosts=ghosts,
+                ghosts=_show_ghosts,
                 cell_color=cell_color,
                 cell_width=cell_width,
                 ghost_opacity=ghost_opacity,
                 bo_explicit=bo,
             )
             ref_graph = _gif_mol.graph
+        if nci_ligand_protein_only:
+            _nci_sem = None
+            if isinstance(molecule, Molecule):
+                _nci_sem = molecule.protein_semantics if molecule.protein_semantics is not None else molecule.protein_data
+            if _nci_sem is not None:
+                from xyzrender.readers import filter_ligand_protein_nci
+
+                ref_graph = filter_ligand_protein_nci(ref_graph, _nci_sem)
+                n_after_filter = sum(1 for _, _, d in ref_graph.edges(data=True) if d.get("NCI", False))
+                if n_after_filter == 0:
+                    logger.info("nci_ligand_protein_only filter applied for GIF; 0 NCI interactions remained")
+            else:
+                logger.warning(
+                    "nci_ligand_protein_only requested for GIF but no protein/ligand semantics are available; keeping all NCI edges"
+                )
         # Build surface params when a cube is present
         mo_params = dens_params = None
         if cube_data is not None and (mo or dens):
@@ -1477,6 +1757,17 @@ def render_gif(
                 has_esp=False,
                 has_nci=False,
             )
+        _rot_protein_data = None
+        if isinstance(molecule, Molecule):
+            _rot_protein_data = molecule.protein_semantics if molecule.protein_semantics is not None else molecule.protein_data
+            if protein and _rot_protein_data is None:
+                from xyzrender.protein_semantics import extract_protein_semantics
+
+                _rot_protein_data = extract_protein_semantics(
+                    ref_graph,
+                    source_path=molecule.source_path,
+                    protein_requested=True,
+                )
         render_rotation_gif(
             ref_graph,
             cfg,
@@ -1488,6 +1779,7 @@ def render_gif(
             mo_cube=cube_data if mo_params is not None else None,
             dens_params=dens_params,
             dens_cube=cube_data if dens_params is not None else None,
+            protein_data=_rot_protein_data,
         )
 
     logger.info("GIF written to %s", gif_path)
@@ -1548,6 +1840,7 @@ def _build_ensemble_molecule(
     rebuild: bool = False,
     quick: bool = False,
     nci_detect: bool = False,
+    nci_ligand_protein_only: bool = False,
     reference_mol: Molecule | None = None,
 ) -> Molecule:
     """Build a :class:`Molecule` representing an ensemble of conformers.
@@ -1638,7 +1931,7 @@ def _build_ensemble_molecule(
         from xyzrender.readers import detect_nci as _detect_nci
 
         if reference_mol is None:
-            ref_graph = _detect_nci(ref_graph)
+            ref_graph = _detect_nci(ref_graph, ligand_protein_only=nci_ligand_protein_only)
 
     conformer_graphs: list[nx.Graph] | None = None
     if rebuild:
@@ -1655,7 +1948,7 @@ def _build_ensemble_molecule(
                 if "bond_order" in d:
                     d["bond_order"] = 1
             if nci_detect:
-                fg = _detect_nci(fg)
+                fg = _detect_nci(fg, ligand_protein_only=nci_ligand_protein_only)
             conformer_graphs.append(fg)
 
     # Resolve palette colours now that we know n_conformers.
@@ -1686,7 +1979,14 @@ def _build_ensemble_molecule(
         reference_idx=reference_frame,
     )
 
-    return Molecule(graph=ref_graph, cube_data=None, cell_data=cell_data, oriented=oriented, ensemble=ens)
+    return Molecule(
+        graph=ref_graph,
+        cube_data=None,
+        cell_data=cell_data,
+        oriented=oriented,
+        ensemble=ens,
+        source_path=str(traj_path),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1694,10 +1994,34 @@ def _build_ensemble_molecule(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_semantic_selector_indices(
+    atoms_spec: "str | list[int]",
+    *,
+    protein_data: "ProteinData | ProteinSemantics | None" = None,
+    context: str,
+) -> list[int]:
+    """Resolve atom selector specs to 0-indexed atom indices.
+
+    Supports canonical numeric selectors plus the semantic selector token
+    ``"ligand"`` when protein semantics are available.
+    """
+    if isinstance(atoms_spec, str) and atoms_spec.strip() == "ligand":
+        ligand_indices = set(getattr(protein_data, "ligand_indices", set()) or set())
+        if not ligand_indices:
+            logger.warning(
+                "%s selector 'ligand' requested but no ligand semantics are available; skipping this selector",
+                context,
+            )
+            return []
+        return sorted(int(i) for i in ligand_indices)
+    return parse_atom_indices(atoms_spec)
+
+
 def _apply_highlight(
     cfg: "RenderConfig",
     *,
     highlight: "str | list[int] | list[list[int] | str] | list[tuple] | None" = None,
+    protein_data: "ProteinData | ProteinSemantics | None" = None,
 ) -> None:
     """Apply highlight atom coloring to *cfg* (mutates in place).
 
@@ -1756,7 +2080,9 @@ def _apply_highlight(
     seen: set[int] = set()
     auto_idx = 0
     for atoms_spec, color_spec in raw_groups:
-        indices = parse_atom_indices(atoms_spec)
+        indices = _resolve_semantic_selector_indices(atoms_spec, protein_data=protein_data, context="highlight")
+        if not indices:
+            continue
 
         overlap = seen & set(indices)
         if overlap:
@@ -1774,6 +2100,84 @@ def _apply_highlight(
         groups.append(HighlightGroup(indices=indices, color=color))
 
     cfg.highlight_groups = groups
+
+
+def _apply_halo(
+    cfg: "RenderConfig",
+    *,
+    halo: "str | list[int] | list[list[int] | str] | list[tuple] | None" = None,
+    halo_opacity: float | None = None,
+    halo_scale: float | None = None,
+    halo_blur: bool | None = None,
+    protein_data: "ProteinData | ProteinSemantics | None" = None,
+    ligand_color: str | None = None,
+) -> None:
+    """Apply halo glow groups to *cfg* (mutates in place).
+
+    Accepts the same atom-specifier forms as :func:`_apply_highlight`.
+    Atom indices are 1-indexed.
+    """
+    if halo is None:
+        return
+
+    from typing import cast
+
+    from xyzrender.types import HaloGroup
+
+    palette = cfg.highlight_colors
+    groups: list[HaloGroup] = []
+
+    raw_groups: list[tuple[str | list[int], str | None]]
+
+    if isinstance(halo, str):
+        raw_groups = [(halo, None)]
+    elif isinstance(halo, list) and halo:
+        first = halo[0]
+        if isinstance(first, int):
+            raw_groups = [(cast("list[int]", halo), None)]
+        elif isinstance(first, str):
+            raw_groups = [(cast("str", s), None) for s in halo]
+        elif isinstance(first, list):
+            raw_groups = [(cast("list[int]", sub), None) for sub in halo]
+        elif isinstance(first, tuple):
+            raw_groups = []
+            for entry in halo:
+                if isinstance(entry, tuple):
+                    atoms_spec = entry[0]
+                    color_spec = entry[1] if len(entry) > 1 else None
+                    raw_groups.append((atoms_spec, color_spec))
+                else:
+                    msg = f"halo entry must be a tuple, got {type(entry)}"
+                    raise TypeError(msg)
+        else:
+            msg = f"unexpected halo element type: {type(first)}"
+            raise TypeError(msg)
+    else:
+        return
+
+    auto_idx = 0
+    for atoms_spec, color_spec in raw_groups:
+        _is_ligand_selector = isinstance(atoms_spec, str) and atoms_spec.strip() == "ligand"
+        indices = _resolve_semantic_selector_indices(atoms_spec, protein_data=protein_data, context="halo")
+        if not indices:
+            continue
+        if color_spec is not None:
+            color = resolve_color(color_spec)
+        elif _is_ligand_selector and ligand_color is not None:
+            color = resolve_color(ligand_color)
+        else:
+            color = resolve_color(palette[auto_idx % len(palette)])
+            auto_idx += 1
+        g = HaloGroup(indices=indices, color=color)
+        if halo_opacity is not None:
+            g.opacity = halo_opacity
+        if halo_scale is not None:
+            g.scale = halo_scale
+        if halo_blur is not None:
+            g.blur = halo_blur
+        groups.append(g)
+
+    cfg.halo_groups = groups
 
 
 def _apply_style_regions(
@@ -2118,7 +2522,8 @@ def _apply_cell_config(
             ]
         )
 
-    # Ghost (periodic image) atoms — default: on when cell_data is present
+    # Ghost (periodic image) atoms. Callers pre-resolve defaults and pass a
+    # concrete bool; None falls back to legacy "on" behavior.
     _show_ghosts = ghosts if ghosts is not None else True
     if _show_ghosts:
         from xyzrender.crystal import add_crystal_images

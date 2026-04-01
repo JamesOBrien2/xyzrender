@@ -196,3 +196,112 @@ def test_mol_color_with_highlight(caffeine):
     # Both gray (base) and orchid (highlight) should appear
     assert resolve_color("gray") in svg
     assert resolve_color("orchid") in svg
+
+
+# ---------------------------------------------------------------------------
+# Atom halos
+# ---------------------------------------------------------------------------
+
+
+def test_halo_circles_in_svg(caffeine):
+    """Halo circles (fill-opacity, stroke=none) appear for each halo atom."""
+    svg = str(render(caffeine, halo=[1, 2, 3], gradient=False, fog=False, orient=False))
+    halos = [ln for ln in svg.splitlines() if "fill-opacity" in ln and 'stroke="none"' in ln]
+    assert len(halos) == 3
+
+
+def test_halo_default_color(caffeine):
+    """Default halo color is palette[0] (orchid)."""
+    svg = str(render(caffeine, halo="1-3", gradient=False, fog=False, orient=False))
+    assert resolve_color("orchid") in svg
+
+
+def test_halo_custom_color(caffeine):
+    """Explicit halo color via tuple form."""
+    svg = str(render(caffeine, halo=[([1, 2, 3], "hotpink")], gradient=False, fog=False, orient=False))
+    assert resolve_color("hotpink") in svg
+
+
+def test_halo_blur_filter_in_svg(caffeine):
+    """SVG contains halo blur filter def when blur is enabled (default)."""
+    svg = str(render(caffeine, halo=[1], orient=False))
+    assert "halo_blur" in svg
+
+
+def test_halo_no_blur_omits_filter(caffeine):
+    """No blur filter def when halo_blur=False."""
+    svg = str(render(caffeine, halo=[1], halo_blur=False, orient=False))
+    assert "halo_blur" not in svg
+    # Halo circle still present but without filter attribute
+    halos = [ln for ln in svg.splitlines() if "fill-opacity" in ln and 'stroke="none"' in ln]
+    assert len(halos) == 1
+    assert "filter=" not in halos[0]
+
+
+def test_halo_opacity_respected(caffeine):
+    """Custom opacity value appears in halo circle SVG."""
+    svg = str(render(caffeine, halo="1", halo_opacity=0.77, halo_blur=False, orient=False))
+    halos = [ln for ln in svg.splitlines() if "fill-opacity" in ln and 'stroke="none"' in ln]
+    assert len(halos) == 1
+    assert 'fill-opacity="0.77"' in halos[0]
+
+
+def test_halo_scale_affects_radius(caffeine):
+    """Larger halo_scale produces a larger radius circle than smaller scale."""
+    svg_small = str(render(caffeine, halo="1", halo_scale=1.5, halo_blur=False, orient=False))
+    svg_large = str(render(caffeine, halo="1", halo_scale=3.0, halo_blur=False, orient=False))
+    import re
+
+    def _halo_r(svg: str) -> float:
+        for ln in svg.splitlines():
+            if "fill-opacity" in ln and 'stroke="none"' in ln:
+                m = re.search(r'r="([\d.]+)"', ln)
+                if m:
+                    return float(m.group(1))
+        return 0.0
+
+    assert _halo_r(svg_large) > _halo_r(svg_small)
+
+
+def test_halo_multi_group(caffeine):
+    """Two halo groups with different colors both appear."""
+    svg = str(
+        render(
+            caffeine,
+            halo=[("1-3", "blue"), ("5-8", "red")],
+            gradient=False,
+            fog=False,
+            orient=False,
+        )
+    )
+    assert resolve_color("blue") in svg
+    assert resolve_color("red") in svg
+    halos = [ln for ln in svg.splitlines() if "fill-opacity" in ln and 'stroke="none"' in ln]
+    assert len(halos) == 7  # 3 + 4 atoms
+
+
+def test_halo_independent_of_highlight(caffeine):
+    """Halo and highlight can be combined; atom keeps highlight color, halo is separate circle."""
+    svg = str(
+        render(
+            caffeine,
+            highlight=[1, 2, 3],
+            halo=[1, 2, 3],
+            gradient=False,
+            fog=False,
+            orient=False,
+        )
+    )
+    # Highlight changes atom fill color; halo adds a separate translucent circle
+    halos = [ln for ln in svg.splitlines() if "fill-opacity" in ln and 'stroke="none"' in ln]
+    assert len(halos) == 3
+    assert resolve_color("orchid") in svg  # highlight color on atom
+
+
+def test_halo_ligand_selector_warns_without_semantics(caffeine, caplog):
+    """'ligand' halo selector should warn and skip when semantics are unavailable."""
+    with caplog.at_level("WARNING", logger="xyzrender.api"):
+        svg = str(render(caffeine, halo="ligand", orient=False))
+    halos = [ln for ln in svg.splitlines() if "fill-opacity" in ln and 'stroke="none"' in ln]
+    assert len(halos) == 0
+    assert "selector 'ligand' requested but no ligand semantics are available" in caplog.text

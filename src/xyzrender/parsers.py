@@ -12,6 +12,8 @@ All parsers return a :class:`MolData` instance which carries:
 - ``name`` — molecule name/title (may be empty)
 - ``charge`` — formal charge parsed from the file (0 when unavailable)
 - ``pbc_cell`` — ``(3, 3)`` float array of row lattice vectors (Å) or ``None``
+- ``atom_annotations`` — optional canonical per-atom metadata used for
+  protein semantics extraction
 """
 
 from __future__ import annotations
@@ -19,8 +21,19 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from xyzrender.types import ProteinData
+
+# ---------------------------------------------------------------------------
+# Protein HETATM classification sets
+# ---------------------------------------------------------------------------
+
+_WATER_RESNAMES: frozenset[str] = frozenset({"HOH", "WAT", "DOD", "H2O", "TIP", "TIP3", "SOL"})
+_ION_RESNAMES: frozenset[str] = frozenset({"NA", "K", "CA", "MG", "ZN", "CL", "FE", "CU", "MN", "CO", "NI", "SO4", "PO4"})
 
 # ---------------------------------------------------------------------------
 # Common data container
@@ -45,6 +58,9 @@ class MolData:
     pbc_cell:
         ``(3, 3)`` float array whose rows are the lattice vectors **a**, **b**,
         **c** in Ångström, or ``None`` for non-periodic structures.
+    atom_annotations:
+        Optional canonical per-atom metadata rows used for downstream protein
+        semantics extraction.
     """
 
     atoms: list[tuple[str, tuple[float, float, float]]]
@@ -52,6 +68,8 @@ class MolData:
     name: str = ""
     charge: int = 0
     pbc_cell: np.ndarray | None = field(default=None, repr=False)
+    protein_data: "ProteinData | None" = field(default=None, repr=False)
+    atom_annotations: list[dict[str, object]] | None = field(default=None, repr=False)
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +373,7 @@ def parse_mol2(path: str | Path) -> MolData:
 
     atoms: list[tuple[str, tuple[float, float, float]]] = []
     bonds: list[tuple[int, int, float]] = []
+    atom_annotations: list[dict[str, object]] = []
 
     # --- ATOM section ---
     if "ATOM" in section_indices:
@@ -375,6 +394,31 @@ def parse_mol2(path: str | Path) -> MolData:
                     raw_type = parts[5] if len(parts) > 5 else parts[1]
                     sym = raw_type.split(".")[0].capitalize()
                     atoms.append((sym, (x, y, z)))
+                    atom_name = parts[1]
+                    if len(parts) > 6:
+                        try:
+                            subst_id = int(parts[6])
+                        except ValueError:
+                            subst_id = 0
+                    else:
+                        subst_id = 0
+                    subst_name = parts[7] if len(parts) > 7 else "RES"
+                    m_chain = re.search(r"[:_]([A-Za-z0-9])$", subst_name)
+                    chain_id = m_chain.group(1) if m_chain else "A"
+                    m_res = re.match(r"([A-Za-z]{3})", subst_name)
+                    res_name = m_res.group(1).upper() if m_res else "RES"
+                    m_seq = re.search(r"(-?\d+)", subst_name)
+                    res_seq = int(m_seq.group(1)) if m_seq else subst_id
+                    atom_annotations.append(
+                        {
+                            "record_type": "ATOM",
+                            "atom_name": atom_name,
+                            "res_name": res_name,
+                            "res_seq": res_seq,
+                            "chain_id": chain_id,
+                            "ss_type": "C",
+                        }
+                    )
             idx += 1
 
     # --- BOND section ---
@@ -397,7 +441,7 @@ def parse_mol2(path: str | Path) -> MolData:
                     bonds.append((a1, a2, _MOL2_BOND_ORDER.get(btype, 1.0)))
             idx += 1
 
-    return MolData(atoms=atoms, bonds=bonds or None, name=name)
+    return MolData(atoms=atoms, bonds=bonds or None, name=name, atom_annotations=atom_annotations or None)
 
 
 # ---------------------------------------------------------------------------
@@ -438,11 +482,17 @@ def _abc_angles_to_cell(a: float, b: float, c: float, alpha: float, beta: float,
     return np.array([[ax, 0.0, 0.0], [bx, by, 0.0], [cx, cy, cz]], dtype=float)
 
 
+_BACKBONE_ATOM_NAMES = frozenset({"N", "CA", "C", "O", "OXT"})
+
+
 def parse_pdb(path: str | Path) -> MolData:
     """Parse a PDB file.
 
     Reads ``ATOM``/``HETATM`` records for coordinates, ``CONECT`` records for
     connectivity, and the ``CRYST1`` record for the unit cell (if present).
+    Also extracts protein chain/residue/secondary-structure metadata when
+    present (HELIX/SHEET records), returning a :class:`ProteinData` on the
+    result.
 
     When ``CONECT`` records are absent (e.g. protein backbone only) ``bonds``
     is ``None`` and xyzgraph distance-based detection will be used instead.
@@ -456,7 +506,9 @@ def parse_pdb(path: str | Path) -> MolData:
     -------
     MolData
         Parsed structure.  ``pbc_cell`` is a ``(3, 3)`` array when a
-        ``CRYST1`` record is present, otherwise ``None``.
+        ``CRYST1`` record is present, otherwise ``None``.  ``protein_data``
+        is populated when the file contains ATOM records with chain/residue
+        information.
     """
     text = Path(path).read_text(encoding="utf-8", errors="replace")
     lines = text.splitlines()
@@ -469,6 +521,16 @@ def parse_pdb(path: str | Path) -> MolData:
 
     # CONECT entries: serial → set of connected serials
     conect: dict[int, set[int]] = {}
+
+    # Protein metadata: per-atom record info for later assembly
+    # Each entry: (record_type, atom_name, res_name, chain_id, res_seq)
+    atom_meta: list[tuple[str, str, str, str, int]] = []
+
+    # Secondary structure spans
+    helix_spans: list[tuple[str, int, int]] = []
+    sheet_spans: list[tuple[str, int, int]] = []
+
+    has_chain_info = False  # set True when we see chain IDs
 
     for ln in lines:
         rec = ln[:6].strip().upper()
@@ -492,6 +554,18 @@ def parse_pdb(path: str | Path) -> MolData:
             idx = len(atoms)
             serial_to_idx[serial] = idx
             atoms.append((sym, (x, y, z)))
+
+            # Protein metadata columns
+            atom_name = ln[12:16].strip() if len(ln) > 15 else ""
+            res_name = ln[17:20].strip() if len(ln) > 19 else ""
+            chain_id = ln[21].strip() if len(ln) > 21 else ""
+            try:
+                res_seq = int(ln[22:26])
+            except (ValueError, IndexError):
+                res_seq = 0
+            atom_meta.append((rec, atom_name, res_name, chain_id, res_seq))
+            if chain_id:
+                has_chain_info = True
 
         elif rec == "CONECT":
             # CONECT lines: serial followed by up to 4 bonded serials (cols 7-10, 11-15, ...)
@@ -522,6 +596,30 @@ def parse_pdb(path: str | Path) -> MolData:
             except (ValueError, IndexError):
                 pass
 
+        elif rec == "HELIX":
+            # HELIX  seqNum helixID initResName initChainID initSeqNum ...
+            # cols: chain=19, start=21-24, end=33-36 (all 1-indexed)
+            try:
+                chain = ln[19].strip() if len(ln) > 19 else ""
+                start = int(ln[21:25])
+                end = int(ln[33:37])
+                if chain:
+                    helix_spans.append((chain, start, end))
+            except (ValueError, IndexError):
+                pass
+
+        elif rec == "SHEET":
+            # SHEET  strand sheetID numStrands initResName initChainID initSeqNum ...
+            # cols: chain=21, start=22-25, end=33-36
+            try:
+                chain = ln[21].strip() if len(ln) > 21 else ""
+                start = int(ln[22:26])
+                end = int(ln[33:37])
+                if chain:
+                    sheet_spans.append((chain, start, end))
+            except (ValueError, IndexError):
+                pass
+
         elif rec in ("COMPND", "HEADER"):
             if not name:
                 name = ln[10:].strip()
@@ -545,7 +643,159 @@ def parse_pdb(path: str | Path) -> MolData:
                     bond_list.append((key[0], key[1], 1.0))
         bonds = bond_list or None
 
-    return MolData(atoms=atoms, bonds=bonds, name=name, pbc_cell=pbc_cell)
+    # Build ProteinData when chain info is present
+    protein_data: ProteinData | None = None
+    if has_chain_info and atom_meta:
+        protein_data = _build_protein_data(atom_meta, helix_spans, sheet_spans)
+    helix_lookup: dict[str, list[tuple[int, int]]] = {}
+    for chain, start, end in helix_spans:
+        helix_lookup.setdefault(chain, []).append((start, end))
+    sheet_lookup: dict[str, list[tuple[int, int]]] = {}
+    for chain, start, end in sheet_spans:
+        sheet_lookup.setdefault(chain, []).append((start, end))
+
+    def _ss_type(chain_id: str, res_seq: int, rec: str) -> str:
+        if rec != "ATOM":
+            return "C"
+        for s, e in helix_lookup.get(chain_id, []):
+            if s <= res_seq <= e:
+                return "H"
+        for s, e in sheet_lookup.get(chain_id, []):
+            if s <= res_seq <= e:
+                return "E"
+        return "C"
+
+    atom_annotations: list[dict[str, object]] = []
+    for rec, atom_name, res_name, chain_id, res_seq in atom_meta:
+        atom_annotations.append(
+            {
+                "record_type": rec,
+                "atom_name": atom_name,
+                "res_name": res_name or "UNK",
+                "res_seq": int(res_seq),
+                "chain_id": chain_id or "A",
+                "ss_type": _ss_type(chain_id, res_seq, rec),
+            }
+        )
+
+    return MolData(
+        atoms=atoms,
+        bonds=bonds,
+        name=name,
+        pbc_cell=pbc_cell,
+        protein_data=protein_data,
+        atom_annotations=atom_annotations or None,
+    )
+
+
+def _build_protein_data(
+    atom_meta: list[tuple[str, str, str, str, int]],
+    helix_spans: list[tuple[str, int, int]],
+    sheet_spans: list[tuple[str, int, int]],
+) -> "ProteinData":
+    """Assemble :class:`ProteinData` from per-atom metadata."""
+    from xyzrender.types import ChainData, ProteinData, ResidueData
+
+    # Build helix/sheet lookup: chain_id → list of (start, end) ranges
+    helix_lookup: dict[str, list[tuple[int, int]]] = {}
+    for chain, start, end in helix_spans:
+        helix_lookup.setdefault(chain, []).append((start, end))
+    sheet_lookup: dict[str, list[tuple[int, int]]] = {}
+    for chain, start, end in sheet_spans:
+        sheet_lookup.setdefault(chain, []).append((start, end))
+
+    def _ss_type(chain_id: str, res_seq: int) -> str:
+        for s, e in helix_lookup.get(chain_id, []):
+            if s <= res_seq <= e:
+                return "H"
+        for s, e in sheet_lookup.get(chain_id, []):
+            if s <= res_seq <= e:
+                return "E"
+        return "C"
+
+    # Accumulate residues per chain, grouping consecutive (chain_id, res_seq, res_name)
+    chains: dict[str, list[ResidueData]] = {}
+    hetatm_indices: set[int] = set()
+    ligand_indices: set[int] = set()
+    water_indices: set[int] = set()
+    ion_indices: set[int] = set()
+    backbone_indices: set[int] = set()
+    sidechain_indices: set[int] = set()
+
+    # Group atoms into residues: key = (chain_id, res_seq, res_name)
+    residue_atoms: dict[tuple[str, int, str], list[tuple[int, str, str]]] = {}
+    residue_order: list[tuple[str, int, str]] = []
+
+    for idx, (rec, atom_name, res_name, chain_id, res_seq) in enumerate(atom_meta):
+        if rec == "HETATM":
+            hetatm_indices.add(idx)
+            if res_name in _WATER_RESNAMES:
+                water_indices.add(idx)
+            elif res_name in _ION_RESNAMES:
+                ion_indices.add(idx)
+            else:
+                ligand_indices.add(idx)
+            continue
+
+        key = (chain_id, res_seq, res_name)
+        if key not in residue_atoms:
+            residue_atoms[key] = []
+            residue_order.append(key)
+        residue_atoms[key].append((idx, atom_name, rec))
+
+    # Build ResidueData objects
+    for chain_id, res_seq, res_name in residue_order:
+        entries = residue_atoms[(chain_id, res_seq, res_name)]
+        all_indices = [i for i, _, _ in entries]
+        ca_index: int | None = None
+        c_index: int | None = None
+        o_index: int | None = None
+        n_index: int | None = None
+
+        for i, atom_name, _ in entries:
+            aname_upper = atom_name.upper()
+            if aname_upper == "CA":
+                ca_index = i
+                backbone_indices.add(i)
+            elif aname_upper == "C":
+                c_index = i
+                backbone_indices.add(i)
+            elif aname_upper in ("O", "OXT"):
+                if aname_upper == "O" and o_index is None:
+                    o_index = i
+                backbone_indices.add(i)
+            elif aname_upper == "N":
+                n_index = i
+                backbone_indices.add(i)
+            else:
+                sidechain_indices.add(i)
+
+        ss = _ss_type(chain_id, res_seq)
+        res = ResidueData(
+            res_name=res_name,
+            res_seq=res_seq,
+            chain_id=chain_id,
+            atom_indices=all_indices,
+            ca_index=ca_index,
+            c_index=c_index,
+            o_index=o_index,
+            n_index=n_index,
+            ss_type=ss,
+        )
+        chains.setdefault(chain_id, []).append(res)
+
+    chain_data = {cid: ChainData(chain_id=cid, residues=residues) for cid, residues in chains.items()}
+    return ProteinData(
+        chains=chain_data,
+        hetatm_indices=hetatm_indices,
+        backbone_indices=backbone_indices,
+        sidechain_indices=sidechain_indices,
+        helix_spans=helix_spans,
+        sheet_spans=sheet_spans,
+        ligand_indices=ligand_indices,
+        water_indices=water_indices,
+        ion_indices=ion_indices,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -630,6 +880,7 @@ def parse_cif(path: str | Path) -> MolData:
     """Parse a CIF file via ase.  Requires ``pip install 'xyzrender[cif]'``.
 
     bonds is None (ase does not store bonds); pbc_cell holds the lattice matrix.
+    When available, per-atom annotations are extracted for protein semantics.
     """
     try:
         import ase
@@ -638,14 +889,163 @@ def parse_cif(path: str | Path) -> MolData:
         msg = "CIF parsing requires ase: pip install 'xyzrender[cif]'"
         raise ImportError(msg) from None
 
-    structure = ase.io.read(str(path), format="cif")
+    structure = ase.io.read(str(path), format="cif", store_tags=True)
+
     assert isinstance(structure, ase.Atoms), f"Expected Atoms from CIF, got {type(structure)}"
 
     symbols: list[str] = list(structure.get_chemical_symbols())
     positions = structure.get_positions()
     cell = np.array(structure.get_cell())
+    n_atoms = len(symbols)
 
     atoms: list[tuple[str, tuple[float, float, float]]] = [
         (sym, (float(x), float(y), float(z))) for sym, (x, y, z) in zip(symbols, positions, strict=True)
     ]
-    return MolData(atoms=atoms, bonds=None, pbc_cell=cell, name=str(path))
+    arrays = structure.arrays
+    info = {str(k).lower(): v for k, v in structure.info.items()}
+
+    def _to_list(values: object) -> list[object] | None:
+        if values is None:
+            return None
+        if isinstance(values, np.ndarray):
+            return values.tolist()
+        if isinstance(values, (list, tuple)):
+            return list(values)
+        return [values]
+
+    tags_raw = arrays.get("tags")
+    tags: list[int] | None = None
+    if tags_raw is not None and len(tags_raw) == n_atoms:
+        try:
+            tags = [int(x) for x in tags_raw]
+        except Exception:  # pragma: no cover - defensive only
+            tags = None
+
+    def _atom_column_from_info(*keys: str) -> list[object] | None:
+        for key in keys:
+            col = _to_list(info.get(key.lower()))
+            if not col:
+                continue
+            if tags is not None and max(tags, default=-1) < len(col):
+                return [col[idx] for idx in tags]
+            if len(col) == n_atoms:
+                return col
+        return None
+
+    def _atom_column(*array_keys: str, info_keys: tuple[str, ...] = ()) -> list[object] | None:
+        for key in array_keys:
+            col = arrays.get(key)
+            if col is None:
+                continue
+            col_list = _to_list(col)
+            if col_list is not None and len(col_list) == n_atoms:
+                return col_list
+        if info_keys:
+            return _atom_column_from_info(*info_keys)
+        return None
+
+    def _loop_column(*keys: str) -> list[object] | None:
+        for key in keys:
+            col = _to_list(info.get(key.lower()))
+            if col:
+                return col
+        return None
+
+    def _clean_str(value: object, default: str) -> str:
+        s = str(value).strip()
+        if s in {"", ".", "?"}:
+            return default
+        return s
+
+    def _to_int(value: object, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    atom_names = _atom_column(
+        "atomtypes",
+        info_keys=("_atom_site.auth_atom_id", "_atom_site.label_atom_id"),
+    ) or [""] * n_atoms
+    res_names = _atom_column(
+        "residuenames",
+        info_keys=("_atom_site.auth_comp_id", "_atom_site.label_comp_id"),
+    ) or ["UNK"] * n_atoms
+    res_seqs = _atom_column(
+        "residuenumbers",
+        info_keys=("_atom_site.auth_seq_id", "_atom_site.label_seq_id"),
+    ) or list(range(1, n_atoms + 1))
+    chain_ids = _atom_column(
+        "chainids",
+        info_keys=("_atom_site.auth_asym_id", "_atom_site.label_asym_id"),
+    ) or ["A"] * n_atoms
+    record_types = _atom_column(
+        info_keys=("_atom_site.group_pdb",),
+    ) or ["ATOM"] * n_atoms
+
+    # Build residue-level SS map from mmCIF/CIF loops.
+    # Precedence is deterministic: H overrides E for overlapping ranges.
+    residue_ss: dict[tuple[str, int], str] = {}
+
+    conf_type = _loop_column("_struct_conf.conf_type_id")
+    conf_beg_chain = _loop_column("_struct_conf.beg_auth_asym_id", "_struct_conf.beg_label_asym_id")
+    conf_end_chain = _loop_column("_struct_conf.end_auth_asym_id", "_struct_conf.end_label_asym_id")
+    conf_beg_seq = _loop_column("_struct_conf.beg_auth_seq_id", "_struct_conf.beg_label_seq_id")
+    conf_end_seq = _loop_column("_struct_conf.end_auth_seq_id", "_struct_conf.end_label_seq_id")
+    if conf_type and conf_beg_chain and conf_end_chain and conf_beg_seq and conf_end_seq:
+        n_rows = min(len(conf_type), len(conf_beg_chain), len(conf_end_chain), len(conf_beg_seq), len(conf_end_seq))
+        for i in range(n_rows):
+            ctype = _clean_str(conf_type[i], "").upper()
+            if not ctype.startswith("HELX"):
+                continue
+            chain = _clean_str(conf_beg_chain[i], _clean_str(conf_end_chain[i], "A"))
+            start = _to_int(conf_beg_seq[i], 0)
+            end = _to_int(conf_end_seq[i], 0)
+            if not chain or start == 0 or end == 0:
+                continue
+            lo, hi = (start, end) if start <= end else (end, start)
+            for seq in range(lo, hi + 1):
+                residue_ss[(chain, seq)] = "H"
+
+    sheet_beg_chain = _loop_column("_struct_sheet_range.beg_auth_asym_id", "_struct_sheet_range.beg_label_asym_id")
+    sheet_end_chain = _loop_column("_struct_sheet_range.end_auth_asym_id", "_struct_sheet_range.end_label_asym_id")
+    sheet_beg_seq = _loop_column("_struct_sheet_range.beg_auth_seq_id", "_struct_sheet_range.beg_label_seq_id")
+    sheet_end_seq = _loop_column("_struct_sheet_range.end_auth_seq_id", "_struct_sheet_range.end_label_seq_id")
+    if sheet_beg_chain and sheet_end_chain and sheet_beg_seq and sheet_end_seq:
+        n_rows = min(len(sheet_beg_chain), len(sheet_end_chain), len(sheet_beg_seq), len(sheet_end_seq))
+        for i in range(n_rows):
+            chain = _clean_str(sheet_beg_chain[i], _clean_str(sheet_end_chain[i], "A"))
+            start = _to_int(sheet_beg_seq[i], 0)
+            end = _to_int(sheet_end_seq[i], 0)
+            if not chain or start == 0 or end == 0:
+                continue
+            lo, hi = (start, end) if start <= end else (end, start)
+            for seq in range(lo, hi + 1):
+                key = (chain, seq)
+                if residue_ss.get(key) != "H":
+                    residue_ss[key] = "E"
+
+    atom_annotations: list[dict[str, object]] = []
+    for i in range(n_atoms):
+        chain_id = _clean_str(chain_ids[i], "A")
+        res_seq = _to_int(res_seqs[i], i + 1)
+        ss_type = residue_ss.get((chain_id, res_seq), "C")
+        rec = _clean_str(record_types[i], "ATOM").upper()
+        atom_annotations.append(
+            {
+                "record_type": "HETATM" if rec == "HETATM" else "ATOM",
+                "atom_name": _clean_str(atom_names[i], ""),
+                "res_name": _clean_str(res_names[i], "UNK").upper(),
+                "res_seq": res_seq,
+                "chain_id": chain_id,
+                "ss_type": ss_type,
+            }
+        )
+
+    return MolData(
+        atoms=atoms,
+        bonds=None,
+        pbc_cell=cell,
+        name=str(path),
+        atom_annotations=atom_annotations or None,
+    )

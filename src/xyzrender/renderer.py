@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import itertools
 import logging
+from typing import TYPE_CHECKING
 
 import networkx as nx
 import numpy as np
 from xyzgraph import DATA
+
+if TYPE_CHECKING:
+    from xyzrender.types import ProteinData, ProteinSemantics
 
 from xyzrender.cmap import atom_colors as cmap_atom_colors
 from xyzrender.cmap import colorbar_extra_width, colorbar_svg
@@ -38,7 +42,14 @@ _H_ATOM_SCALE = 0.6  # display-radius shrink factor for H atoms (ball-and-stick)
 _H_VDW_SCALE = 0.65  # VdW-sphere shrink factor for H atoms
 
 
-def render_svg(graph, config: RenderConfig | None = None, *, _log: bool = True, _unique_ids: bool = True) -> str:
+def render_svg(
+    graph,
+    config: RenderConfig | None = None,
+    *,
+    protein_data: "ProteinData | ProteinSemantics | None" = None,
+    _log: bool = True,
+    _unique_ids: bool = True,
+) -> str:
     """Render molecular graph to SVG string."""
     cfg = config or RenderConfig()
     node_ids = list(graph.nodes())
@@ -246,6 +257,18 @@ def render_svg(graph, config: RenderConfig | None = None, *, _log: bool = True, 
             colors[ai] = flat
         mol_bond_color = flat.blend(Color(0, 0, 0), 0.3).hex
 
+    # Ligand highlighting: recolor ligand atoms (HETATM excluding water/ions).
+    # Manual highlight groups are applied later and therefore take precedence.
+    ligand_atom_set: set[int] = set()
+    ligand_bond_color: str | None = None
+    if cfg.ligand_highlight and protein_data is not None:
+        ligand_atom_set = set(protein_data.ligand_indices)
+        lig = Color.from_str(cfg.ligand_color)
+        for ai in ligand_atom_set:
+            if 0 <= ai < n:
+                colors[ai] = lig
+        ligand_bond_color = lig.blend(Color(0, 0, 0), 0.3).hex
+
     # Highlight: override colors for user-specified atom groups
     hl_atom_group: dict[int, int] = {}  # atom_idx → group_id
     hl_group_bond_color: list[str] = []  # group_id → darkened bond hex
@@ -256,6 +279,15 @@ def render_svg(graph, config: RenderConfig | None = None, *, _log: bool = True, 
             for ai in group._index_set:
                 colors[ai] = gc
                 hl_atom_group[ai] = gid
+
+    # Halo map: atom_idx → HaloGroup (last group wins if an atom appears in multiple)
+    from xyzrender.types import HaloGroup as _HaloGroup
+
+    halo_atom_map: dict[int, _HaloGroup] = {}
+    if cfg.halo_groups:
+        for hg in cfg.halo_groups:
+            for ai in hg._index_set:
+                halo_atom_map[ai] = hg
 
     # Bond lookup: (bond_order, style, color_override)
     bonds: dict[tuple[int, int], tuple[float, BondStyle, str | None]] = {}
@@ -277,6 +309,11 @@ def render_svg(graph, config: RenderConfig | None = None, *, _log: bool = True, 
         for i, j in cfg.nci_bonds:
             existing = bonds.get((i, j), (1.0, BondStyle.SOLID, None))
             bonds[(i, j)] = bonds[(j, i)] = (existing[0], BondStyle.DOTTED, existing[2])
+        # Ligand highlighting: color covalent ligand-ligand bonds.
+        if ligand_bond_color is not None and ligand_atom_set:
+            for (i, j), (bo, style, c_ov) in list(bonds.items()):
+                if i in ligand_atom_set and j in ligand_atom_set and style == BondStyle.SOLID and c_ov is None:
+                    bonds[(i, j)] = bonds[(j, i)] = (bo, style, ligand_bond_color)
         # Molecule color: paint all SOLID bonds with darkened mol_color
         if mol_bond_color is not None:
             for (i, j), (bo, style, c_ov) in list(bonds.items()):
@@ -292,7 +329,7 @@ def render_svg(graph, config: RenderConfig | None = None, *, _log: bool = True, 
                     gi is not None
                     and gi == gj
                     and style == BondStyle.SOLID
-                    and (c_ov is None or c_ov == mol_bond_color)
+                    and (c_ov is None or c_ov == mol_bond_color or c_ov == ligand_bond_color)
                 ):
                     bonds[(i, j)] = bonds[(j, i)] = (bo, style, hl_group_bond_color[gi])
 
@@ -305,6 +342,22 @@ def render_svg(graph, config: RenderConfig | None = None, *, _log: bool = True, 
                 neighbours = list(graph.neighbors(ai))
                 if neighbours and all(symbols[nb] == "C" for nb in neighbours):
                     hidden.add(ai)
+
+    # Protein ribbon mode: explicitly excluded chains (residue atoms only).
+    if cfg.protein and protein_data is not None and cfg.exclude_chains:
+        for cid in cfg.exclude_chains:
+            chain = protein_data.chains.get(cid)
+            if chain is None:
+                continue
+            for res in chain.residues:
+                hidden.update(res.atom_indices)
+
+    # Protein ribbon mode: suppress backbone (and optionally sidechain) atoms.
+    # HETATM atoms are left visible for ball-and-stick rendering.
+    if cfg.protein and protein_data is not None:
+        hidden.update(protein_data.backbone_indices)
+        if not cfg.show_sidechain:
+            hidden.update(protein_data.sidechain_indices)
 
     aromatic_rings = [] if cfg.hide_bonds else _compute_aromatic_rings(graph, bonds)
 
@@ -445,6 +498,14 @@ def render_svg(graph, config: RenderConfig | None = None, *, _log: bool = True, 
                     f"</radialGradient>"
                 )
         svg.append("  </defs>")
+
+    # Halo blur filter def (one filter shared by all halo circles)
+    if halo_atom_map and any(hg.blur for hg in cfg.halo_groups):
+        svg.append(
+            '  <defs><filter id="halo_blur" filterUnits="objectBoundingBox" '
+            'primitiveUnits="objectBoundingBox" x="-100%" y="-100%" width="300%" height="300%">'
+            '<feGaussianBlur stdDeviation="0.2"/></filter></defs>'
+        )
 
     # MO lobe front/back classification
     mo_is_front = None
@@ -675,6 +736,41 @@ def render_svg(graph, config: RenderConfig | None = None, *, _log: bool = True, 
         while nci_lobe_idx < len(nci_lobes_flat) and nci_lobes_flat[nci_lobe_idx][0] < next_z:
             svg.extend(nci_lobes_flat[nci_lobe_idx][1])
             nci_lobe_idx += 1
+
+    # Protein ribbon z-interleaving (same drain pattern as NCI patches)
+    ribbon_items: list[tuple[float, list[str]]] = []
+    ribbon_idx = 0
+    if cfg.protein and protein_data is not None:
+        from xyzrender.ribbon import (
+            assign_chain_colors,
+            ribbon_gradient_defs,
+            ribbon_style_uses_gradients,
+            ribbon_svg_items,
+            trace_svg_items,
+        )
+        from xyzrender.types import ProteinConfidence
+
+        if protein_data.confidence_tier == ProteinConfidence.TRACE_ONLY:
+            ribbon_items = trace_svg_items(protein_data, cfg, pos, scale, cx, cy, canvas_w, canvas_h)
+        elif protein_data.confidence_tier == ProteinConfidence.INSUFFICIENT:
+            ribbon_items = []
+        else:
+            ribbon_items = ribbon_svg_items(protein_data, cfg, pos, scale, cx, cy, canvas_w, canvas_h)
+            # Emit gradient defs only for glossy ribbon shading.
+            if ribbon_style_uses_gradients(cfg.protein_style):
+                chain_ids = [cid for cid in protein_data.chains.keys() if cid not in cfg.exclude_chains]
+                chain_colors = assign_chain_colors(cfg, chain_ids, style=cfg.protein_style)
+                _ribbon_defs = ribbon_gradient_defs(chain_colors, style=cfg.protein_style)
+                if _ribbon_defs:
+                    svg.append("  <defs>")
+                    svg.extend(_ribbon_defs)
+                    svg.append("  </defs>")
+
+    def _drain_ribbon(next_z: float) -> None:
+        nonlocal ribbon_idx
+        while ribbon_idx < len(ribbon_items) and ribbon_items[ribbon_idx][0] < next_z:
+            svg.extend(ribbon_items[ribbon_idx][1])
+            ribbon_idx += 1
 
     # Interleaved z-order: for each atom, render it then its bonds to deeper atoms
 
@@ -951,102 +1047,118 @@ def render_svg(graph, config: RenderConfig | None = None, *, _log: bool = True, 
                 )
             _pv_pos += 1
 
-        if ai in hidden:
-            continue
-
         # Drain NCI patches that belong behind this atom (before drawing it or its bonds)
         if nci_lobes_flat:
             _drain_nci(float(pos[ai][2]))
 
+        # Drain ribbon panels that belong behind this atom
+        if ribbon_items:
+            _drain_ribbon(float(pos[ai][2]))
+
+        ai_hidden = ai in hidden
         xi, yi = _proj(pos[ai], scale, cx, cy, canvas_w, canvas_h)
         is_image = graph.nodes[ai].get("image", False)
+        _ai_ens_op = ens_opacities[ai] if not is_image else None
         if is_image:
             atom_op = cfg.periodic_image_opacity
-        elif ens_opacities[ai] is not None:
-            atom_op = ens_opacities[ai]
+        elif _ai_ens_op is not None:
+            atom_op = _ai_ens_op
         else:
             atom_op = 1.0
         op_attr_atom = f' opacity="{atom_op:.2f}"' if atom_op < 1.0 else ""
+
+        # Halo circle (drawn before atom so the atom sphere appears on top)
+        if not ai_hidden and halo_atom_map and (hg := halo_atom_map.get(ai)) is not None:
+            halo_r = radii[ai] * hg.scale * scale
+            blur_attr = ' filter="url(#halo_blur)"' if hg.blur else ""
+            svg.append(
+                f'  <circle cx="{xi:.1f}" cy="{yi:.1f}" r="{halo_r:.1f}" '
+                f'fill="{hg.color}" fill-opacity="{hg.opacity:.2f}" stroke="none"{blur_attr}/>'
+            )
 
         # Atom graphics / labels — per-atom config for style regions.
         # NCI centroid nodes ("*") are structural overlays — always use the
         # base config so they stay visible regardless of region styling.
         acfg = cfg if symbols[ai] == "*" else (_acfg[ai] if _acfg is not None else cfg)
-        _atom_layer_start = len(svg)
-        if acfg.skeletal_style:
-            if not is_image:
-                skeletal_atom_svg(
-                    svg,
-                    ai,
-                    xi,
-                    yi,
-                    symbols=symbols,
-                    colors=colors,
-                    fs_label=fs_label,
-                    fog_enabled=cfg.fog,
-                    fog_rgb=fog_rgb,
-                    fog_f=fog_f,
-                    label_color_override=acfg.skeletal_label_color,
-                )
-        else:
-            # Atom circle (gradient or flat fill)
-            _sw_ai = _atom_sw[ai] if _atom_sw is not None else sw
-            _grad_ai = _atom_use_grad[ai] if _atom_use_grad is not None else use_grad
-            _stroke_atom = colors[ai].hex if acfg.atom_stroke_color == "atom" else acfg.atom_stroke_color
-            dof_attr = f' filter="url(#dof{dof_buckets[ai]})"' if cfg.dof else ""
-            if _grad_ai:
-                if use_per_atom_grad:
-                    grad_id = f"g{ai}"
-                    fs_atom = atom_fog_stroke[ai]
-                else:
-                    gid_suffix = f"{a_nums[ai]}_{colors[ai].hex[1:]}"
-                    if _acfg is not None:
-                        gid_suffix += f"_{id(acfg) & 0xFFFF:04x}"
-                    grad_id = f"g{gid_suffix}"
-                    fs_atom = _stroke_atom
-                svg.append(
-                    f'  <circle cx="{xi:.1f}" cy="{yi:.1f}" r="{radii[ai] * scale:.1f}" '
-                    f'fill="url(#{grad_id})" stroke="{fs_atom}" stroke-width="{_sw_ai:.1f}"{op_attr_atom}{dof_attr}/>'
-                )
+        if not ai_hidden:
+            _atom_layer_start = len(svg)
+            if acfg.skeletal_style:
+                if not is_image:
+                    skeletal_atom_svg(
+                        svg,
+                        ai,
+                        xi,
+                        yi,
+                        symbols=symbols,
+                        colors=colors,
+                        fs_label=fs_label,
+                        fog_enabled=cfg.fog,
+                        fog_rgb=fog_rgb,
+                        fog_f=fog_f,
+                        label_color_override=acfg.skeletal_label_color,
+                    )
             else:
-                fill = colors[ai].blend(WHITE, acfg.atom_wash).hex if acfg.atom_wash > 0 else colors[ai].hex
-                stroke = _stroke_atom
-                if cfg.fog:
-                    fill = blend_fog(fill, fog_rgb, fog_f[ai])
-                    stroke = blend_fog(stroke, fog_rgb, fog_f[ai])
-                svg.append(
-                    f'  <circle cx="{xi:.1f}" cy="{yi:.1f}" r="{radii[ai] * scale:.1f}" '
-                    f'fill="{fill}" stroke="{stroke}" stroke-width="{_sw_ai:.1f}"{op_attr_atom}{dof_attr}/>'
-                )
+                # Atom circle (gradient or flat fill)
+                _sw_ai = _atom_sw[ai] if _atom_sw is not None else sw
+                _grad_ai = _atom_use_grad[ai] if _atom_use_grad is not None else use_grad
+                _stroke_atom = colors[ai].hex if acfg.atom_stroke_color == "atom" else acfg.atom_stroke_color
+                dof_attr = f' filter="url(#dof{dof_buckets[ai]})"' if cfg.dof else ""
+                if _grad_ai:
+                    if use_per_atom_grad:
+                        grad_id = f"g{ai}"
+                        fs_atom = atom_fog_stroke[ai]
+                    else:
+                        gid_suffix = f"{a_nums[ai]}_{colors[ai].hex[1:]}"
+                        if _acfg is not None:
+                            gid_suffix += f"_{id(acfg) & 0xFFFF:04x}"
+                        grad_id = f"g{gid_suffix}"
+                        fs_atom = _stroke_atom
+                    svg.append(
+                        f'  <circle cx="{xi:.1f}" cy="{yi:.1f}" r="{radii[ai] * scale:.1f}" '
+                        f'fill="url(#{grad_id})" stroke="{fs_atom}" stroke-width="{_sw_ai:.1f}"{op_attr_atom}{dof_attr}/>'
+                    )
+                else:
+                    fill = colors[ai].blend(WHITE, acfg.atom_wash).hex if acfg.atom_wash > 0 else colors[ai].hex
+                    stroke = _stroke_atom
+                    if cfg.fog:
+                        fill = blend_fog(fill, fog_rgb, fog_f[ai])
+                        stroke = blend_fog(stroke, fog_rgb, fog_f[ai])
+                    svg.append(
+                        f'  <circle cx="{xi:.1f}" cy="{yi:.1f}" r="{radii[ai] * scale:.1f}" '
+                        f'fill="{fill}" stroke="{stroke}" stroke-width="{_sw_ai:.1f}"{op_attr_atom}{dof_attr}/>'
+                    )
 
-            # Atom index label — depth-sorted with atom so nearer atoms occlude it
-            # (skip for image atoms — labels would be confusing)
-            if cfg.show_indices and not is_image:
-                fmt = cfg.idx_format
-                sym = symbols[ai]
-                if fmt == "sn":
-                    idx_text = f"{sym}{ai + 1}"
-                elif fmt == "s":
-                    idx_text = sym
-                else:  # "n"
-                    idx_text = str(ai + 1)
-                svg.append(_text_svg(xi, yi, idx_text, fs_label, cfg.label_color, halo=False))
-            # Defer this atom's layers when its config has atoms_above_bonds
-            if acfg.atoms_above_bonds and len(svg) > _atom_layer_start:
-                _deferred_atom_layers.extend(svg[_atom_layer_start:])
-                del svg[_atom_layer_start:]
+                # Atom index label — depth-sorted with atom so nearer atoms occlude it
+                # (skip for image atoms — labels would be confusing)
+                if cfg.show_indices and not is_image:
+                    fmt = cfg.idx_format
+                    sym = symbols[ai]
+                    if fmt == "sn":
+                        idx_text = f"{sym}{ai + 1}"
+                    elif fmt == "s":
+                        idx_text = sym
+                    else:  # "n"
+                        idx_text = str(ai + 1)
+                    svg.append(_text_svg(xi, yi, idx_text, fs_label, cfg.label_color, halo=False))
+                # Defer this atom's layers when its config has atoms_above_bonds
+                if acfg.atoms_above_bonds and len(svg) > _atom_layer_start:
+                    _deferred_atom_layers.extend(svg[_atom_layer_start:])
+                    del svg[_atom_layer_start:]
 
         # Bonds to deeper atoms
         if not cfg.hide_bonds and bw > 0:
             for aj in z_order[idx + 1 :]:
                 aj_int = int(aj)
-                if aj_int in hidden or (ai, aj_int) not in bonds:
+                if (ai, aj_int) not in bonds:
                     continue
                 bo, style, color_ov = bonds[(ai, aj_int)]
+                # In protein ribbon mode, hidden atoms suppress covalent/TS bonds,
+                # but NCI overlays should remain visible even with hidden endpoints.
+                if style != BondStyle.DOTTED and (ai_hidden or aj_int in hidden):
+                    continue
                 # Use periodic_image_opacity if either endpoint is an image atom
                 _aj_image = graph.nodes[aj_int].get("image", False)
                 _aj_ens_op = ens_opacities[aj_int] if not _aj_image else None
-                _ai_ens_op = ens_opacities[ai]
                 if is_image or _aj_image:
                     bond_op = cfg.periodic_image_opacity
                 elif _ai_ens_op is not None or _aj_ens_op is not None:
@@ -1069,6 +1181,11 @@ def render_svg(graph, config: RenderConfig | None = None, *, _log: bool = True, 
     while nci_lobe_idx < len(nci_lobes_flat):
         svg.extend(nci_lobes_flat[nci_lobe_idx][1])
         nci_lobe_idx += 1
+
+    # Ribbon panels in front of all atoms
+    while ribbon_idx < len(ribbon_items):
+        svg.extend(ribbon_items[ribbon_idx][1])
+        ribbon_idx += 1
 
     # Flush any vectors whose origin is in front of all atoms
     while _pv_pos < len(_pending_vecs):

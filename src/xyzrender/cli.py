@@ -52,6 +52,11 @@ def _flatten_specs(items: list[str]) -> list[str]:
 
 def main() -> None:
     """Entry point for the CLI."""
+    from xyzrender.ribbon import default_ribbon_style, ribbon_style_names
+
+    default_style = default_ribbon_style()
+    protein_styles = ribbon_style_names(include_aliases=True)
+
     p = argparse.ArgumentParser(
         prog="xyzrender", description="Publication-quality molecular graphics from the command line."
     )
@@ -296,6 +301,13 @@ def main() -> None:
     )
     ts_g.add_argument("--nci-bond", default="", help='Manual NCI bond pair(s), 1-indexed: "1-5,2-8"')
     ts_g.add_argument("--nci-color", default=None, help="Color for dotted NCI bonds (hex or named)")
+    ts_g.add_argument(
+        "--nci-ligand",
+        dest="nci_ligand",
+        action="store_true",
+        default=False,
+        help="Keep only ligand-associated protein NCI contacts (implies --nci).",
+    )
 
     # --- GIF animation ---
     gif_g = p.add_argument_group("GIF animation")
@@ -351,6 +363,99 @@ def main() -> None:
         default=None,
         metavar=("ATOMS", "COLOR"),
         help='Highlight atom group: --hl "1-5,8" [color]. Can be repeated. Auto-colors if no color given.',
+    )
+
+    # --- Atom halos ---
+    halo_g = p.add_argument_group("atom halos")
+    halo_g.add_argument(
+        "--halo",
+        nargs="+",
+        action="append",
+        default=None,
+        metavar=("ATOMS", "COLOR"),
+        help='Draw a glow halo behind atoms: --halo "1-5" [color]. Can be repeated. Auto-colors if no color.',
+    )
+    halo_g.add_argument(
+        "--halo-opacity",
+        type=float,
+        default=None,
+        metavar="FLOAT",
+        help="Halo fill opacity, 0-1 (default 0.35).",
+    )
+    halo_g.add_argument(
+        "--halo-scale",
+        type=float,
+        default=None,
+        metavar="FLOAT",
+        help="Halo radius as a multiple of the atom display radius (default 2.0).",
+    )
+    halo_g.add_argument(
+        "--no-halo-blur",
+        action="store_true",
+        default=False,
+        help="Disable the soft Gaussian blur on halo circles.",
+    )
+
+    # --- Protein ribbon ---
+    prot_g = p.add_argument_group("protein ribbon")
+    prot_g.add_argument(
+        "--protein",
+        nargs="?",
+        const=default_style,
+        default=None,
+        choices=protein_styles,
+        metavar="STYLE",
+        help=(
+            "Enable ribbon rendering when protein semantics are available. "
+            f"Optional STYLE (default: {default_style}): {', '.join(protein_styles)}."
+        ),
+    )
+    prot_g.add_argument(
+        "--chain-color",
+        nargs=2,
+        action="append",
+        default=None,
+        metavar=("CHAIN", "COLOR"),
+        help="Per-chain colour override: --chain-color A steelblue. Can be repeated.",
+    )
+    prot_g.add_argument(
+        "--ribbon-width",
+        type=float,
+        default=None,
+        metavar="FLOAT",
+        help="Ribbon width in Å for helices and sheets (default 2.2).",
+    )
+    prot_g.add_argument(
+        "--loop-width",
+        type=float,
+        default=None,
+        metavar="FLOAT",
+        help="Loop-width cap in Å for coil segments (default 0.8).",
+    )
+    prot_g.add_argument(
+        "--sidechain",
+        action="store_true",
+        default=False,
+        help="Show amino-acid side chains as sticks (hidden by default in --protein mode).",
+    )
+    prot_g.add_argument(
+        "--exclude-chains",
+        default=None,
+        metavar="CHAINS",
+        help='Exclude protein chains by ID (comma-separated), e.g. --exclude-chains "A,B".',
+    )
+    prot_g.add_argument(
+        "--highlight-ligand",
+        dest="ligand_highlight",
+        action="store_true",
+        default=False,
+        help="Recolor ligands (HETATM excluding water/ions).",
+    )
+    prot_g.add_argument(
+        "--ligand-color",
+        default=None,
+        metavar="COLOR",
+        help="Ligand highlight color (hex or named, default: #ffb347).",
     )
 
     # --- Style regions ---
@@ -515,7 +620,10 @@ def main() -> None:
         "--ghosts",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Show/hide periodic image atoms (default: on when --cell, off otherwise)",
+        help=(
+            "Show/hide periodic image atoms "
+            "(default: on for cell-bearing inputs, off in --protein mode unless explicitly set)"
+        ),
     )
     crystal_g.add_argument(
         "--axes",
@@ -548,7 +656,6 @@ def main() -> None:
         metavar=("M", "N", "L"),
         help="Repeat the unit cell M N L times along a, b, c. Default: 1 1 1.",
     )
-
     args = p.parse_args()
 
     from_stdin = not args.input and not sys.stdin.isatty()
@@ -635,6 +742,14 @@ def main() -> None:
                 raise SystemExit(f"error: --hl takes 1-2 arguments (ATOMS [COLOR]), got {len(entry)}")
         _highlight = [tuple(e) for e in args.hl]
 
+    # Halo atoms (multi-group)
+    _halo: list[tuple[str, ...]] | None = None
+    if args.halo is not None:
+        for entry in args.halo:
+            if len(entry) > 2:
+                raise SystemExit(f"error: --halo takes 1-2 arguments (ATOMS [COLOR]), got {len(entry)}")
+        _halo = [tuple(e) for e in args.halo]
+
     # Bond coloring
     if args.bond_by_element is not None:
         cfg.bond_color_by_element = args.bond_by_element
@@ -709,6 +824,8 @@ def main() -> None:
         if gif_ext != "gif":
             p.error(f"GIF output must have .gif extension, got: .{gif_ext}")
 
+    nci_detect_requested = bool(args.nci_detect or args.nci_ligand)
+
     # --- Load molecule ---
     needs_ts = args.ts_detect or args.gif_ts
     if is_cube and needs_ts:
@@ -744,7 +861,8 @@ def main() -> None:
                 mol_frame=args.mol_frame,
                 ts_detect=needs_ts,
                 ts_frame=args.ts_frame,
-                nci_detect=args.nci_detect,
+                nci_detect=nci_detect_requested,
+                nci_ligand_protein_only=args.nci_ligand,
                 cell=args.cell,
                 quick=args.bo is False,
                 bohr=True if args.bohr else None,
@@ -886,7 +1004,8 @@ def main() -> None:
             ensemble_palette=_ens_palette,
             ensemble_opacity=args.opacity,
             rebuild=args.rebuild,
-            nci_detect=args.nci_detect,
+            nci_detect=nci_detect_requested,
+            nci_ligand_protein_only=args.nci_ligand,
             charge=args.charge,
             multiplicity=args.multiplicity,
             kekule=args.kekule,
@@ -894,8 +1013,14 @@ def main() -> None:
         )
 
     # --- Crystal ghost resolution ---
-    # Ghosts default: on whenever the molecule carries cell_data (auto-detected or explicit)
-    _show_ghosts = args.ghosts if args.ghosts is not None else mol.cell_data is not None
+    # Explicit user choice always wins. In protein mode, default ghosts off;
+    # otherwise preserve legacy behavior (on for cell-bearing inputs).
+    if args.ghosts is not None:
+        _show_ghosts = args.ghosts
+    elif args.protein is not None:
+        _show_ghosts = False
+    else:
+        _show_ghosts = mol.cell_data is not None
 
     # Validate supercell usage: allowed for any input that has a valid lattice.
     if _supercell != (1, 1, 1):
@@ -947,6 +1072,19 @@ def main() -> None:
             bo=args.bo,
             output=args.output,
             ref=args.ref,
+            protein=(args.protein if args.protein is not None else False),
+            chain_colors=dict(args.chain_color) if args.chain_color else None,
+            exclude_chains=args.exclude_chains,
+            ribbon_width=args.ribbon_width,
+            loop_width=args.loop_width,
+            sidechain=args.sidechain,
+            ligand_highlight=args.ligand_highlight,
+            ligand_color=args.ligand_color,
+            nci_ligand_protein_only=args.nci_ligand,
+            halo=_halo,
+            halo_opacity=args.halo_opacity,
+            halo_scale=args.halo_scale,
+            halo_blur=False if args.no_halo_blur else None,
         )
     except ValueError as e:
         p.error(str(e))
@@ -995,7 +1133,8 @@ def main() -> None:
                 overlay=args.overlay,
                 overlay_color=args.overlay_color,
                 reference_graph=_ref_graph,
-                detect_nci=args.nci_detect,
+                detect_nci=nci_detect_requested,
+                nci_ligand_protein_only=args.nci_ligand,
                 mo=args.mo,
                 dens=args.dens,
                 iso=args.iso,
@@ -1017,6 +1156,18 @@ def main() -> None:
                 vector=args.vector,
                 vector_scale=args.vector_scale,
                 ref=args.ref,
+                halo=_halo,
+                halo_opacity=args.halo_opacity,
+                halo_scale=args.halo_scale,
+                halo_blur=False if args.no_halo_blur else None,
+                protein=(args.protein if args.protein is not None else False),
+                chain_colors=dict(args.chain_color) if args.chain_color else None,
+                exclude_chains=args.exclude_chains,
+                ribbon_width=args.ribbon_width,
+                loop_width=args.loop_width,
+                sidechain=args.sidechain,
+                ligand_highlight=args.ligand_highlight,
+                ligand_color=args.ligand_color,
             )
         except ValueError as e:
             p.error(str(e))
