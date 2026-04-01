@@ -33,7 +33,9 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 _WATER_RESNAMES: frozenset[str] = frozenset({"HOH", "WAT", "DOD", "H2O", "TIP", "TIP3", "SOL"})
-_ION_RESNAMES: frozenset[str] = frozenset({"NA", "K", "CA", "MG", "ZN", "CL", "FE", "CU", "MN", "CO", "NI", "SO4", "PO4"})
+_ION_RESNAMES: frozenset[str] = frozenset(
+    {"NA", "K", "CA", "MG", "ZN", "CL", "FE", "CU", "MN", "CO", "NI", "SO4", "PO4"}
+)
 
 # ---------------------------------------------------------------------------
 # Common data container

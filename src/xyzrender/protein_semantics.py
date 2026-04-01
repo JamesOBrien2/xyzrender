@@ -6,8 +6,8 @@ graph-only heuristics, with explicit confidence tiers for rendering decisions.
 
 from __future__ import annotations
 
-import logging
 import importlib
+import logging
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
