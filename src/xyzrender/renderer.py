@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import math
 from typing import NamedTuple
 
 import networkx as nx
@@ -494,15 +495,17 @@ def render_svg(graph, config: RenderConfig | None = None, *, _log: bool = True, 
         )
         svg.append("  </defs>")
 
-    # Per-atom gradient and skeletal flags (style-region aware)
+    # Per-atom gradient, hatch, and skeletal flags (style-region aware)
     _atom_use_grad: list[bool] | None = None
     if _acfg is not None:
         _atom_use_grad = [_acfg[ai].gradient and not _acfg[ai].skeletal_style for ai in range(n)]
         use_grad = any(_atom_use_grad)
         any_skeletal = any(_acfg[ai].skeletal_style for ai in range(n))
+        use_hatch = any(_acfg[ai].atom_hatch for ai in range(n))
     else:
         use_grad = cfg.gradient and not cfg.skeletal_style
         any_skeletal = cfg.skeletal_style
+        use_hatch = cfg.atom_hatch
     if any_skeletal:
         from xyzrender.skeletal import skeletal_atom_svg, skeletal_bond_svg
     # Fog requires per-atom gradient defs: each atom has a unique depth-blended fill
@@ -573,6 +576,35 @@ def render_svg(graph, config: RenderConfig | None = None, *, _log: bool = True, 
                     f"</radialGradient>"
                 )
         svg.append("  </defs>")
+
+    # Hatch pattern defs — single shared black pattern overlaid on gradient sphere
+    _hatch_atoms: set[int] = set()
+    _hatch_pattern_id: str | None = None
+    if use_hatch:
+        _hatch_atoms = {
+            ai
+            for ai in range(n)
+            if ai not in hidden
+            and not (_acfg[ai] if _acfg is not None else cfg).skeletal_style
+            and (_acfg[ai] if _acfg is not None else cfg).atom_hatch
+        }
+        if _hatch_atoms:
+            svg.append("  <defs>")
+            _first = next(iter(_hatch_atoms))
+            _hacfg = _acfg[_first] if _acfg is not None else cfg
+            sp = _hacfg.atom_hatch_spacing
+            ang = _hacfg.atom_hatch_angle
+            hw = _hacfg.atom_hatch_width
+            _hatch_pattern_id = "hatch_black"
+            svg.append(
+                f'    <pattern id="{_hatch_pattern_id}" x="0" y="0" '
+                f'width="{sp:.1f}" height="{sp:.1f}" '
+                f'patternUnits="userSpaceOnUse" patternTransform="rotate({ang:.1f})">'
+                f'<line x1="0" y1="0" x2="0" y2="{sp:.1f}" '
+                f'stroke="#333333" stroke-width="{hw:.1f}"/>'
+                f"</pattern>"
+            )
+            svg.append("  </defs>")
 
     # VdW surface defs
     vdw_set = None
@@ -1483,6 +1515,32 @@ def render_svg(graph, config: RenderConfig | None = None, *, _log: bool = True, 
                 svg.append(
                     f'  <circle cx="{xi:.1f}" cy="{yi:.1f}" r="{radii[ai] * scale:.1f}" '
                     f'fill="{fill}" stroke="{stroke}" stroke-width="{_sw_ai:.1f}"{op_attr_atom}{dof_attr}/>'
+                )
+
+            # ORTEP hatch overlay — full-circle hatch pattern on top of gradient sphere
+            if ai in _hatch_atoms and _hatch_pattern_id is not None:
+                _r = radii[ai] * scale
+                svg.append(
+                    f'  <circle cx="{xi:.1f}" cy="{yi:.1f}" r="{_r:.1f}" '
+                    f'fill="url(#{_hatch_pattern_id})"{op_attr_atom}{dof_attr}/>'
+                )
+
+            # ORTEP-style diagonal × cross lines on atom sphere
+            if acfg.atom_cross:
+                _r = radii[ai] * scale
+                _θ = math.radians(acfg.atom_cross_angle)
+                _dx = _r * math.cos(_θ)
+                _dy = _r * math.sin(_θ)
+                _clw = acfg.atom_cross_width
+                svg.append(
+                    f'  <line x1="{xi - _dx:.1f}" y1="{yi + _dy:.1f}" '
+                    f'x2="{xi + _dx:.1f}" y2="{yi - _dy:.1f}" '
+                    f'stroke="#333333" stroke-width="{_clw:.1f}"/>'
+                )
+                svg.append(
+                    f'  <line x1="{xi - _dx:.1f}" y1="{yi - _dy:.1f}" '
+                    f'x2="{xi + _dx:.1f}" y2="{yi + _dy:.1f}" '
+                    f'stroke="#333333" stroke-width="{_clw:.1f}"/>'
                 )
 
             # Atom index label — depth-sorted with atom so nearer atoms occlude it

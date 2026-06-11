@@ -344,6 +344,15 @@ class RenderConfig:
     # Atom glow (blurred duplicate circle rendered under selected atoms)
     glow_indices: list[int] = field(default_factory=list)  # 0-indexed
     glow_strength: float = 5.0
+    # Atom hatch (diagonal-line SVG pattern overlaid on each atom circle)
+    atom_hatch: bool = False
+    atom_hatch_spacing: float = 6.0  # stripe period in SVG px
+    atom_hatch_angle: float = 45.0  # degrees
+    atom_hatch_width: float = 1.5  # stripe stroke-width in SVG px
+    # Atom cross (ORTEP-style diagonal × lines drawn on each atom sphere)
+    atom_cross: bool = False
+    atom_cross_angle: float = 30.0  # degrees from horizontal for each arm
+    atom_cross_width: float = 1.5  # stroke-width in SVG px
     # Overlay (nested sub-config so new per-overlay knobs slot in without churn)
     overlay: OverlayConfig = field(default_factory=OverlayConfig)
     # Ensemble
