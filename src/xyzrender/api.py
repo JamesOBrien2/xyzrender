@@ -1343,6 +1343,8 @@ def render_gif(
     gif_trj: bool = False,
     gif_ts: bool = False,
     gif_diffuse: bool = False,
+    gif_append: bool = False,
+    append_fade: int | None = None,
     # --- Diffuse params ---
     diffuse_frames: int = 60,
     diffuse_noise: float = 0.3,
@@ -1474,6 +1476,7 @@ def render_gif(
     Access the file path via ``result.path``.
 
     At least one of *gif_rot*, *gif_bounce*, *gif_trj*, *gif_ts*, or *gif_diffuse* must be set.
+    *gif_append* combines with *gif_rot*, *gif_bounce*, or *gif_diffuse*.
 
     Parameters
     ----------
@@ -1493,6 +1496,14 @@ def render_gif(
         Mutually exclusive with *gif_rot*.
     gif_ts:
         Transition-state vibration animation (requires ``xyzrender[ts]``).
+    gif_append:
+        Treat each frame of a multi-frame XYZ as an independent structure:
+        render one full animation cycle per structure (combine with
+        *gif_rot*, *gif_bounce*, or *gif_diffuse*) and concatenate the
+        segments with crossfades into a single GIF. Requires a file path.
+    append_fade:
+        Crossfade frames per segment boundary (*gif_append* only).
+        ``None`` → ``max(1, gif_fps // 2)``; ``0`` → hard cuts.
     output:
         Output ``.gif`` path.  Defaults to ``<stem>.gif`` beside *molecule*.
     gif_fps:
@@ -1512,6 +1523,7 @@ def render_gif(
     from xyzrender.config import build_config
     from xyzrender.gif import (
         ROTATION_AXES,
+        render_append_gif,
         render_diffuse_gif,
         render_rotation_gif,
         render_trajectory_gif,
@@ -1522,6 +1534,10 @@ def render_gif(
         bounce_deg, bounce_ax = gif_bounce
     else:
         bounce_deg, bounce_ax = gif_bounce, None
+
+    if gif_append and not (gif_rot or bounce_deg is not None or gif_diffuse):
+        msg = "render_gif: gif_append requires gif_rot, gif_bounce, or gif_diffuse"
+        raise ValueError(msg)
 
     if not (gif_rot or bounce_deg is not None or gif_trj or gif_ts or gif_diffuse):
         msg = "render_gif: set gif_rot, gif_bounce, gif_trj=True, gif_ts=True, or gif_diffuse=True"
@@ -1547,6 +1563,29 @@ def render_gif(
                 "render_gif: gif_bounce and gif_rot are mutually exclusive — use gif_bounce=(deg, axis) to set the axis"
             )
             raise ValueError(msg)
+
+    if gif_append:
+        if gif_ts or gif_trj:
+            msg = (
+                "render_gif: gif_append is mutually exclusive with gif_ts / gif_trj — "
+                "those frames already form the animation"
+            )
+            raise ValueError(msg)
+        if mo or dens:
+            msg = "render_gif: gif_append does not support mo/dens surfaces (a cube file holds a single geometry)"
+            raise ValueError(msg)
+        if overlay is not None:
+            msg = "render_gif: gif_append does not support overlay"
+            raise ValueError(msg)
+        if vector is not None:
+            msg = "render_gif: gif_append does not support vector arrows"
+            raise ValueError(msg)
+        if append_fade is not None and append_fade < 0:
+            msg = "render_gif: append_fade must be >= 0"
+            raise ValueError(msg)
+    elif append_fade is not None:
+        msg = "render_gif: append_fade requires gif_append=True"
+        raise ValueError(msg)
 
     if (mo or dens) and (gif_ts or gif_trj or gif_diffuse):
         active_surf = "mo" if mo else "dens"
@@ -1723,10 +1762,10 @@ def render_gif(
 
     # Resolve molecule → path and/or graph
     if isinstance(molecule, Molecule):
-        if gif_ts or gif_trj:
+        if gif_ts or gif_trj or gif_append:
             msg = (
-                "render_gif: pass a file path (not a Molecule) for gif_ts / gif_trj modes — "
-                "the trajectory is read from disk."
+                "render_gif: pass a file path (not a Molecule) for gif_ts / gif_trj / gif_append modes — "
+                "the frames are read from disk."
             )
             raise ValueError(msg)
         mol_path = None
@@ -1800,6 +1839,29 @@ def render_gif(
         )
         logger.info("GIF written to %s", gif_path)
         return GIFResult(gif_path)
+
+    elif gif_append:
+        from xyzrender.diffuse import parse_anchor
+        from xyzrender.readers import load_trajectory_frames
+
+        frames = load_trajectory_frames(str(mol_path))
+        _append_axis = (gif_rot or None) if gif_diffuse else (bounce_ax or gif_rot or "y")
+        render_append_gif(
+            frames,
+            cfg,
+            str(gif_path),
+            axis=_append_axis,
+            bounce_degrees=float(bounce_deg) if bounce_deg is not None else None,
+            diffuse=gif_diffuse,
+            n_frames=diffuse_frames if gif_diffuse else rot_frames,
+            fps=gif_fps,
+            fade_frames=append_fade,
+            diffuse_noise=diffuse_noise,
+            diffuse_bonds=diffuse_bonds,
+            diffuse_reverse=diffuse_reverse,
+            diffuse_rotation_degrees=float(diffuse_rot) if diffuse_rot else 360.0,
+            anchor=parse_anchor(anchor) if gif_diffuse else None,
+        )
 
     elif gif_diffuse:
         from xyzrender.diffuse import parse_anchor

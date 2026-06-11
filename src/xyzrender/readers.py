@@ -207,8 +207,15 @@ def load_molecule(
                 _xyz_mult = _fm
         except OSError:
             _comment = ""
+        try:
+            _xyz_atoms = read_xyz_file(p)
+        except ValueError:
+            # Multi-frame XYZ with varying atom counts (gif_append input) —
+            # xyzgraph's reader requires uniform frames; take frame 0 manually.
+            _f0 = _load_variable_xyz_frames(p)[0]
+            _xyz_atoms = list(zip(_f0["symbols"], [tuple(q) for q in _f0["positions"]], strict=True))
         graph = build_graph(
-            read_xyz_file(p),
+            _xyz_atoms,
             charge=_xyz_charge,
             multiplicity=_xyz_mult,
             kekule=kekule,
@@ -655,10 +662,15 @@ def _parse_qm_output(path: str) -> tuple[_Atoms, int, int | None]:
 
 
 def _load_xyz_frames(path: str) -> list[dict]:
-    """Read all frames from a multi-frame XYZ file."""
+    """Read all frames from a multi-frame XYZ file (atom counts may vary per frame)."""
     from xyzgraph import count_frames_and_atoms
 
-    n_frames, n_atoms = count_frames_and_atoms(path)
+    try:
+        n_frames, n_atoms = count_frames_and_atoms(path)
+    except ValueError:
+        # Frames have different atom counts (e.g. different molecules for
+        # gif_append) — fall back to header-driven parsing.
+        return _load_variable_xyz_frames(path)
     logger.debug("XYZ file: %d frames, %d atoms per frame", n_frames, n_atoms)
     frames = []
     for i in range(n_frames):
@@ -669,6 +681,39 @@ def _load_xyz_frames(path: str) -> list[dict]:
                 "positions": [list(a[1]) for a in atoms],
             }
         )
+    return frames
+
+
+def _load_variable_xyz_frames(path: str) -> list[dict]:
+    """Parse a multi-frame XYZ where each frame declares its own atom count."""
+    lines = Path(path).read_text().splitlines()
+    frames: list[dict] = []
+    i = 0
+    while i < len(lines):
+        if not lines[i].strip():
+            i += 1
+            continue
+        try:
+            n = int(lines[i].split()[0])
+        except ValueError:
+            msg = f"Invalid XYZ frame header at line {i + 1} of {path}: {lines[i]!r}"
+            raise ValueError(msg) from None
+        block = lines[i + 2 : i + 2 + n]
+        if len(block) < n:
+            msg = f"Truncated XYZ frame at line {i + 1} of {path} (expected {n} atoms, got {len(block)})"
+            raise ValueError(msg)
+        symbols: list[str] = []
+        positions: list[list[float]] = []
+        for j, ln in enumerate(block):
+            parts = ln.split()
+            if len(parts) < 4:
+                msg = f"Malformed XYZ atom line {i + 3 + j} of {path}: {ln!r} (expected 'symbol x y z')"
+                raise ValueError(msg)
+            symbols.append(parts[0])
+            positions.append([float(parts[1]), float(parts[2]), float(parts[3])])
+        frames.append({"symbols": symbols, "positions": positions})
+        i += 2 + n
+    logger.debug("XYZ file: %d frames with per-frame atom counts", len(frames))
     return frames
 
 

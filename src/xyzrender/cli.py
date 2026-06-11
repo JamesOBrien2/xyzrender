@@ -107,6 +107,9 @@ GIF Animation:
   --gif-ts                TS vibration GIF - required vib trj or output with Hessian
   --gif-diffuse           Diffuse assembly GIF
   --gif-bounce DEG[,AXIS] Bounce GIF: 0° -> +DEG -> 0° -> -DEG -> 0° (axis default: y)
+  --gif-append            One animation cycle per frame of a multi-frame .xyz, concatenated
+                          with crossfades (combine with --gif-rot/--gif-bounce/--gif-diffuse)
+  --append-fade N         Crossfade frames between segments (default: fps/2, 0 = hard cut)
   -go FILE / --gif-fps N  GIF output path / frames per second
 
 Surfaces:
@@ -675,6 +678,22 @@ def main() -> None:
         metavar="DEG[,AXIS]",
         help="Bounce rotation: amplitude in degrees, optionally with axis (e.g. 50 or 50,xy). Default axis: y.",
     )
+    gif_g.add_argument(
+        "--gif-append",
+        action="store_true",
+        default=False,
+        help=(
+            "Render one animation cycle per frame of a multi-frame XYZ and concatenate the "
+            "segments with crossfades. Combine with --gif-rot, --gif-bounce, or --gif-diffuse."
+        ),
+    )
+    gif_g.add_argument(
+        "--append-fade",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Crossfade frames between appended segments (default: fps/2; 0 = hard cut)",
+    )
     gif_g.add_argument("--diffuse-frames", type=int, default=60, help="Number of diffuse frames (default: 60)")
     gif_g.add_argument("--diffuse-noise", type=float, default=0.3, help="Per-frame random walk noise (default: 0.3)")
     gif_g.add_argument(
@@ -1070,6 +1089,29 @@ def main() -> None:
             p.error("--gif-bounce cannot be combined with --gif-trj or --gif-diffuse")
         if args.gif_rot:
             p.error("--gif-bounce cannot be combined with --gif-rot — set the axis as --gif-bounce DEG,AXIS")
+
+    if args.gif_append:
+        if not (args.gif_rot or args.gif_bounce is not None or args.gif_diffuse):
+            p.error("--gif-append requires --gif-rot, --gif-bounce, or --gif-diffuse")
+        if args.gif_ts or args.gif_trj:
+            p.error(
+                "--gif-append cannot be combined with --gif-ts or --gif-trj — those frames already form the animation"
+            )
+        if args.mo or args.dens:
+            p.error("--gif-append cannot be combined with --mo/--dens (a cube file holds a single geometry)")
+        if args.overlay:
+            p.error("--gif-append cannot be combined with --overlay")
+        if args.ensemble:
+            p.error("--gif-append cannot be combined with --ensemble (sequential vs superimposed)")
+        if args.vector:
+            p.error("--gif-append cannot be combined with --vector")
+        if not args.input:
+            p.error("--gif-append requires a multi-frame input file")
+    if args.append_fade is not None:
+        if not args.gif_append:
+            p.error("--append-fade requires --gif-append")
+        if args.append_fade < 0:
+            p.error("--append-fade must be >= 0")
 
     # --diffuse-rot without --gif-rot implies y-axis rotation
     if args.gif_diffuse and args.diffuse_rot is not None and not args.gif_rot:
@@ -1468,7 +1510,7 @@ def main() -> None:
             # Ensemble rotation GIF: use the pre-built ensemble Molecule.
             mol_or_path = mol
         else:
-            mol_or_path: str | Molecule = args.input if (args.gif_ts or args.gif_trj) else mol
+            mol_or_path: str | Molecule = args.input if (args.gif_ts or args.gif_trj or args.gif_append) else mol
         # For gif_ts/gif_trj the trajectory is read from disk (mol_or_path is a path),
         # but pass mol.graph as reference_graph so -I orientation and TS/NCI bonds are respected.
         _ref_graph = mol.graph if (args.gif_ts or args.gif_trj) else None
@@ -1483,6 +1525,8 @@ def main() -> None:
                 gif_trj=args.gif_trj,
                 gif_ts=args.gif_ts,
                 gif_diffuse=args.gif_diffuse,
+                gif_append=args.gif_append,
+                append_fade=args.append_fade,
                 diffuse_frames=args.diffuse_frames,
                 diffuse_noise=args.diffuse_noise,
                 diffuse_bonds=args.diffuse_bonds,

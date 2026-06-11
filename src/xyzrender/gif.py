@@ -629,6 +629,203 @@ def render_diffuse_gif(
     logger.info("Wrote %s", output)
 
 
+def _build_append_graph(frame: dict, config: RenderConfig, *, charge: int, multiplicity: int | None, kekule: bool):
+    """Build a molecular graph for one append segment, applying bond rules."""
+    from xyzgraph import build_graph
+
+    atoms = list(zip(frame["symbols"], [tuple(p) for p in frame["positions"]], strict=True))
+    graph = build_graph(atoms, charge=charge, multiplicity=multiplicity, kekule=kekule)
+    if config.unbond or config.bond or config.haptic:
+        from xyzrender.bond_rules import apply_bond_rules
+
+        apply_bond_rules(graph, config)
+    return graph
+
+
+def render_append_gif(
+    frames: list[dict],
+    config: RenderConfig,
+    output: str,
+    *,
+    axis: str | None = "y",
+    bounce_degrees: float | None = None,
+    diffuse: bool = False,
+    n_frames: int = 120,
+    fps: int = 10,
+    fade_frames: int | None = None,
+    charge: int = 0,
+    multiplicity: int | None = None,
+    kekule: bool = False,
+    diffuse_noise: float = 0.3,
+    diffuse_bonds: str = "fade",
+    diffuse_reverse: bool = True,
+    diffuse_rotation_degrees: float = 360.0,
+    anchor: set[int] | None = None,
+) -> None:
+    """Render one animation cycle per structure and concatenate into a single GIF.
+
+    Each frame of *frames* is treated as an independent structure: the bond
+    graph is rebuilt per structure, and each gets one full animation cycle
+    (rotation, bounce, or diffuse) of *n_frames* frames. Segments are joined
+    with a linear crossfade of *fade_frames* frames at every boundary,
+    including the loop seam back to the first structure.
+
+    All segments share a single fixed viewport computed over every structure,
+    so relative sizes are preserved and nothing rescales at the cuts.
+
+    Orientation: when all frames share the same atom symbols (conformers),
+    every structure is Kabsch-aligned onto the first and a single PCA from
+    the first frame is applied — swaps read as in-place morphs. Otherwise
+    each structure is PCA-oriented independently. ``config.auto_orient=False``
+    skips both; structures are always centered on their centroid.
+
+    Parameters
+    ----------
+    frames:
+        Structures as ``{"symbols": [...], "positions": [[x, y, z], ...]}``
+        dicts (the :func:`xyzrender.readers.load_trajectory_frames` format).
+    axis:
+        Rotation axis (same vocabulary as ``render_rotation_gif``). For
+        diffuse segments ``None`` disables in-segment rotation.
+    bounce_degrees:
+        Bounce amplitude — each segment oscillates ±deg instead of a 360° sweep.
+    diffuse:
+        Render each segment as a diffuse/assembly animation instead of rotation.
+    fade_frames:
+        Crossfade frames per boundary. ``None`` → ``max(1, fps // 2)``;
+        ``0`` → hard cuts.
+    """
+    import copy
+
+    n_structs = len(frames)
+    if n_structs == 1:
+        logger.warning("gif_append: input has a single frame — nothing to append, rendering one segment")
+
+    if fade_frames is None:
+        fade_frames = max(1, fps // 2)
+    if fade_frames > 0 and n_structs > 1 and config.transparent:
+        logger.warning("gif_append: crossfade over a transparent background may band (GIF has 1-bit alpha)")
+
+    # Center every structure on its centroid so the shared viewport holds them
+    # all at the canvas center (translation only — independent of auto_orient).
+    same_molecule = all(f["symbols"] == frames[0]["symbols"] for f in frames[1:])
+    centered: list[dict] = []
+    for f in frames:
+        pos = np.array(f["positions"], dtype=float)
+        centered.append({"symbols": f["symbols"], "positions": pos - pos.mean(axis=0)})
+
+    if config.auto_orient:
+        config = copy.copy(config)
+        config.auto_orient = False
+        if same_molecule and n_structs > 1:
+            # Conformers: Kabsch-align each onto the *previous* aligned frame
+            # (chained) — adjacent transitions get minimal RMSD, so swaps read
+            # as in-place morphs even when later conformers drift far from the
+            # first. One PCA from the first frame orients the whole chain.
+            ref = np.asarray(centered[0]["positions"])
+            aligned = [centered[0]]
+            prev = ref
+            for f in centered[1:]:
+                pos = np.asarray(f["positions"])
+                pos = pos @ kabsch_rotation(pos, prev).T
+                aligned.append({"symbols": f["symbols"], "positions": pos})
+                prev = pos
+            frames = _orient_frames(aligned, pca_matrix(ref))
+        else:
+            # Different molecules: no common alignment exists — PCA each independently.
+            frames = [_orient_frames([f], pca_matrix(np.asarray(f["positions"])))[0] for f in centered]
+    else:
+        frames = [{"symbols": f["symbols"], "positions": f["positions"].tolist()} for f in centered]
+
+    _lattice = config.cell_data.lattice if config.cell_data is not None else None
+
+    segments: list[list[bytes]] = []
+    if diffuse:
+        from xyzrender.diffuse import diffuse_frames as _diffuse_frames
+
+        axis_vec = None
+        axis_sign = 1.0
+        if axis:
+            axis_vec, axis_sign = _rotation_axis(axis, lattice=_lattice)
+
+        graphs = []
+        seg_frames: list[list[dict]] = []
+        for f in frames:
+            graph = _build_append_graph(f, config, charge=charge, multiplicity=multiplicity, kekule=kekule)
+            graphs.append(graph)
+            seg_frames.append(
+                _diffuse_frames(
+                    graph,
+                    n_frames=n_frames,
+                    noise=diffuse_noise,
+                    bonds=diffuse_bonds,
+                    reverse=diffuse_reverse,
+                    anchor=anchor,
+                )
+            )
+
+        # Shared viewport over the scattered positions of every segment.
+        cfg = _fixed_viewport([fr for seg in seg_frames for fr in seg], config, rotation_axis=axis_vec)
+        for si, (graph, seg) in enumerate(zip(graphs, seg_frames, strict=True)):
+            logger.info("Rendering diffuse segment %d/%d (%d frames)", si + 1, n_structs, len(seg))
+            segments.append(
+                _render_frames(
+                    graph,
+                    seg,
+                    cfg,
+                    rotation_axis=axis_vec,
+                    rotation_sign=axis_sign,
+                    rotation_degrees=diffuse_rotation_degrees,
+                )
+            )
+    else:
+        axis_vec, axis_sign = _rotation_axis(axis or "y", lattice=_lattice)
+        if bounce_degrees is not None:
+            phase = (np.arange(n_frames, dtype=float) / float(n_frames)) * 2.0 * np.pi
+            angles = axis_sign * bounce_degrees * np.sin(phase)
+        else:
+            angles = axis_sign * (360.0 / n_frames) * np.arange(n_frames, dtype=float)
+
+        rot_cfg = _fixed_viewport(frames, config, rotation_axis=axis_vec)
+        _empty = np.full((0, 3), np.nan)
+        ctx = RotationFrameContext(
+            axis_vec=axis_vec,
+            angles=angles,
+            rot_cfg=rot_cfg,
+            vec_origins=_empty,
+            vec_dirs=_empty,
+            vec_centroid=np.full(3, np.nan),
+            orig_lattice=None,
+            orig_cell_origin=None,
+            atom_centroid=None,
+            mo_params=None,
+            mo_cube=None,
+            dens_params=None,
+            dens_cube=None,
+            mo_cache={},
+            dens_cache={},
+        )
+        _kind = "bounce" if bounce_degrees is not None else "rotation"
+        for si, f in enumerate(frames):
+            graph = _build_append_graph(f, config, charge=charge, multiplicity=multiplicity, kekule=kekule)
+            worker = partial(
+                _render_rot_frame,
+                graph=graph,
+                config=config,
+                nodes=list(graph.nodes()),
+                original_pos_array=np.array(f["positions"], dtype=float),
+                original_lattice=None,
+                original_lattice_origin=None,
+                ctx=ctx,
+            )
+            logger.info("Rendering %s segment %d/%d (%d frames)", _kind, si + 1, n_structs, n_frames)
+            segments.append(_parallel_render(worker, range(n_frames), n_frames))
+
+    pngs = _concat_with_crossfade(segments, fade_frames)
+    _stitch_gif(pngs, output, fps)
+    logger.info("Wrote %s", output)
+
+
 def _fixed_viewport(frames: list[dict], config: RenderConfig, rotation_axis: np.ndarray | None = None) -> RenderConfig:
     """Create a config with fixed viewport so every frame has identical canvas size.
 
@@ -642,7 +839,7 @@ def _fixed_viewport(frames: list[dict], config: RenderConfig, rotation_axis: np.
 
     from xyzgraph import DATA
 
-    max_vdw = max(DATA.vdw.get(s, 1.5) for s in set(frames[0]["symbols"]))
+    max_vdw = max(DATA.vdw.get(s, 1.5) for f in frames for s in set(f["symbols"]))
     if config.vdw_indices is not None:
         atom_pad = max_vdw * config.vdw_scale
     else:
@@ -970,6 +1167,40 @@ def _render_frames(
         rf_vec_dirs=_rf_vec_dirs,
     )
     return _parallel_render(worker, enumerate(frames), total)
+
+
+def _blend_pngs(png_a: bytes, png_b: bytes, n_blend: int) -> list[bytes]:
+    """Generate *n_blend* PNG frames linearly cross-blended from *png_a* to *png_b*."""
+    try:
+        from PIL import Image
+    except ImportError:
+        msg = "GIF generation requires Pillow"
+        raise ImportError(msg) from None
+
+    img_a = Image.open(BytesIO(png_a)).convert("RGBA")
+    img_b = Image.open(BytesIO(png_b)).convert("RGBA")
+    blended = []
+    for i in range(1, n_blend + 1):
+        buf = BytesIO()
+        Image.blend(img_a, img_b, i / (n_blend + 1)).save(buf, format="PNG")
+        blended.append(buf.getvalue())
+    return blended
+
+
+def _concat_with_crossfade(segments: list[list[bytes]], fade_frames: int) -> list[bytes]:
+    """Concatenate PNG segments, inserting *fade_frames* crossfade frames at each boundary.
+
+    The loop seam (last segment back to the first) also gets a fade so the
+    looping GIF never shows a hard cut.
+    """
+    if fade_frames <= 0 or len(segments) < 2:
+        return [png for seg in segments for png in seg]
+    pngs: list[bytes] = []
+    for i, seg in enumerate(segments):
+        pngs.extend(seg)
+        nxt = segments[(i + 1) % len(segments)]
+        pngs.extend(_blend_pngs(seg[-1], nxt[0], fade_frames))
+    return pngs
 
 
 def _stitch_gif(pngs: list[bytes], output: str, fps: int) -> None:

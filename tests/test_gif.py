@@ -545,3 +545,219 @@ def test_render_gif_rot_accepts_align_atoms_kwarg(tmp_path):
         f"render_gif accepted align_atoms but didn't propagate to _apply_overlay: "
         f"got {captured_align.get('align_atoms')!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# gif_append — crossfade helpers (no I/O)
+# ---------------------------------------------------------------------------
+
+
+def _solid_png(color: tuple[int, int, int, int], size: int = 4) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    buf = BytesIO()
+    Image.new("RGBA", (size, size), color).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_concat_with_crossfade_counts():
+    pytest.importorskip("PIL")
+    from xyzrender.gif import _concat_with_crossfade
+
+    red, green = _solid_png((255, 0, 0, 255)), _solid_png((0, 255, 0, 255))
+    segments = [[red] * 3, [green] * 3]
+    out = _concat_with_crossfade(segments, 2)
+    # 2 segments x 3 frames + 2 boundaries (incl. loop seam) x 2 fade frames
+    assert len(out) == 6 + 4
+
+
+def test_concat_with_crossfade_hard_cut():
+    from xyzrender.gif import _concat_with_crossfade
+
+    segments = [[b"a"] * 3, [b"b"] * 2]
+    assert _concat_with_crossfade(segments, 0) == [b"a"] * 3 + [b"b"] * 2
+
+
+def test_concat_with_crossfade_single_segment():
+    from xyzrender.gif import _concat_with_crossfade
+
+    # One segment — no boundaries, fade frames must not be inserted
+    assert _concat_with_crossfade([[b"a"] * 3], 5) == [b"a"] * 3
+
+
+def test_blend_pngs_midpoint():
+    pytest.importorskip("PIL")
+    from io import BytesIO
+
+    from PIL import Image
+
+    from xyzrender.gif import _blend_pngs
+
+    black, white = _solid_png((0, 0, 0, 255)), _solid_png((255, 255, 255, 255))
+    blended = _blend_pngs(black, white, 1)
+    assert len(blended) == 1
+    px = Image.open(BytesIO(blended[0])).convert("RGBA").getpixel((0, 0))
+    assert abs(px[0] - 127) <= 2  # ~50% blend
+
+
+# ---------------------------------------------------------------------------
+# gif_append — rendering + API validation
+# ---------------------------------------------------------------------------
+
+
+def _write_conformers_xyz(path, n_frames: int = 3) -> None:
+    """Tiny 3-frame water 'conformer' trajectory."""
+    base = [("O", 0.0, 0.0, 0.0), ("H", 0.96, 0.0, 0.0), ("H", -0.24, 0.93, 0.0)]
+    lines = []
+    for k in range(n_frames):
+        lines.append("3")
+        lines.append(f"conf {k}")
+        for s, x, y, z in base:
+            lines.append(f"{s} {x + 0.01 * k:.4f} {y:.4f} {z:.4f}")
+    Path(path).write_text("\n".join(lines) + "\n")
+
+
+def test_render_append_gif_frame_count(tmp_path):
+    pytest.importorskip("resvg_py", reason="PNG rendering backend required")
+    from PIL import Image
+
+    from xyzrender import render_gif
+
+    xyz = tmp_path / "confs.xyz"
+    _write_conformers_xyz(xyz)
+    out = tmp_path / "append.gif"
+    result = render_gif(xyz, output=str(out), gif_rot="y", gif_append=True, rot_frames=4, gif_fps=5, append_fade=1)
+    assert result.path.exists()
+    # 3 segments x 4 frames + 3 boundaries (incl. loop seam) x 1 fade frame
+    assert Image.open(out).n_frames == 12 + 3
+
+
+def test_render_append_gif_bounce(tmp_path):
+    pytest.importorskip("resvg_py", reason="PNG rendering backend required")
+    from PIL import Image
+
+    from xyzrender import render_gif
+
+    xyz = tmp_path / "confs.xyz"
+    _write_conformers_xyz(xyz, n_frames=2)
+    out = tmp_path / "append_bounce.gif"
+    render_gif(xyz, output=str(out), gif_bounce=20.0, gif_append=True, rot_frames=4, gif_fps=5, append_fade=0)
+    assert Image.open(out).n_frames == 8  # hard cut: 2 x 4
+
+
+def test_render_append_gif_mixed_atom_counts(tmp_path):
+    pytest.importorskip("resvg_py", reason="PNG rendering backend required")
+    from PIL import Image
+
+    from xyzrender import render_gif
+
+    xyz = tmp_path / "mixed.xyz"
+    xyz.write_text(
+        "3\nwater\nO 0.0 0.0 0.0\nH 0.96 0.0 0.0\nH -0.24 0.93 0.0\n2\nhydrogen\nH 0.0 0.0 0.0\nH 0.74 0.0 0.0\n"
+    )
+    out = tmp_path / "mixed.gif"
+    render_gif(xyz, output=str(out), gif_rot="y", gif_append=True, rot_frames=4, gif_fps=5, append_fade=0)
+    assert Image.open(out).n_frames == 8
+
+
+def test_render_gif_append_requires_mode(tmp_path):
+    from xyzrender import render_gif
+
+    with pytest.raises(ValueError, match="gif_append requires"):
+        render_gif(STRUCTURES / "caffeine.xyz", output=str(tmp_path / "x.gif"), gif_append=True)
+
+
+def test_render_gif_append_trj_conflict(tmp_path):
+    from xyzrender import render_gif
+
+    with pytest.raises(ValueError, match="mutually exclusive with gif_ts / gif_trj"):
+        render_gif(
+            STRUCTURES / "caffeine.xyz",
+            output=str(tmp_path / "x.gif"),
+            gif_rot="y",
+            gif_append=True,
+            gif_trj=True,
+        )
+
+
+def test_render_gif_append_molecule_input_error(tmp_path):
+    from xyzrender import load, render_gif
+
+    mol = load(STRUCTURES / "caffeine.xyz")
+    with pytest.raises(ValueError, match="pass a file path"):
+        render_gif(mol, output=str(tmp_path / "x.gif"), gif_rot="y", gif_append=True)
+
+
+def test_render_gif_append_negative_fade(tmp_path):
+    from xyzrender import render_gif
+
+    with pytest.raises(ValueError, match="append_fade must be >= 0"):
+        render_gif(
+            STRUCTURES / "caffeine.xyz",
+            output=str(tmp_path / "x.gif"),
+            gif_rot="y",
+            gif_append=True,
+            append_fade=-1,
+        )
+
+
+def test_render_gif_append_fade_requires_append(tmp_path):
+    from xyzrender import render_gif
+
+    with pytest.raises(ValueError, match="append_fade requires gif_append"):
+        render_gif(
+            STRUCTURES / "caffeine.xyz",
+            output=str(tmp_path / "x.gif"),
+            gif_rot="y",
+            append_fade=2,
+        )
+
+
+def test_load_variable_xyz_frames(tmp_path):
+    from xyzrender.readers import load_trajectory_frames
+
+    xyz = tmp_path / "var.xyz"
+    xyz.write_text(
+        "3\nwater\nO 0.0 0.0 0.0\nH 0.96 0.0 0.0\nH -0.24 0.93 0.0\n2\nhydrogen\nH 0.0 0.0 0.0\nH 0.74 0.0 0.0\n"
+    )
+    frames = load_trajectory_frames(str(xyz))
+    assert len(frames) == 2
+    assert frames[0]["symbols"] == ["O", "H", "H"]
+    assert frames[1]["symbols"] == ["H", "H"]
+    assert frames[1]["positions"][1] == [0.74, 0.0, 0.0]
+
+
+# ---------------------------------------------------------------------------
+# gif_append — multi-conformer ensemble (RDKit butan-1-ol, 6 frames x 15 atoms)
+# ---------------------------------------------------------------------------
+
+BUTANOL_CONFS = STRUCTURES / "butanol_confs.xyz"
+
+
+def test_load_butanol_ensemble_frames():
+    from xyzrender.readers import load_trajectory_frames
+
+    frames = load_trajectory_frames(str(BUTANOL_CONFS))
+    assert len(frames) == 6
+    assert all(len(f["symbols"]) == 15 for f in frames)
+    assert frames[0]["symbols"].count("O") == 1
+
+
+def test_render_append_gif_butanol_ensemble(tmp_path):
+    pytest.importorskip("resvg_py", reason="PNG rendering backend required")
+    from PIL import Image
+
+    from xyzrender import render_gif
+
+    # First 4 conformers (17 lines per frame: count + comment + 15 atoms)
+    lines = BUTANOL_CONFS.read_text().splitlines()
+    subset = tmp_path / "subset.xyz"
+    subset.write_text("\n".join(lines[: 4 * 17]) + "\n")
+
+    out = tmp_path / "butanol.gif"
+    result = render_gif(subset, output=str(out), gif_rot="y", gif_append=True, rot_frames=3, gif_fps=5, append_fade=1)
+    assert result.path.exists()
+    # 4 segments x 3 frames + 4 boundaries (incl. loop seam) x 1 fade frame
+    assert Image.open(out).n_frames == 12 + 4
