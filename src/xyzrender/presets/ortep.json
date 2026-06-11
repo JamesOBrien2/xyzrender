@@ -1,0 +1,13 @@
+{
+  "gradient": true,
+  "atom_cross": true,
+  "atom_cross_angle": 30.0,
+  "atom_cross_width": 1.5,
+  "atom_stroke_color": "#333333",
+  "atom_stroke_width": 3,
+  "fog": true,
+  "bond_width": 6,
+  "bond_color": "black",
+  "bond_gradient": false,
+  "bond_orders": false
+}
