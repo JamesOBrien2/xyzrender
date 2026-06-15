@@ -120,6 +120,55 @@ def test_rotate_frames_preserves_extra_keys():
     assert out[0]["hull_opacity_factor"] == 0.8
 
 
+def test_apply_manual_ts_bonds_overrides_auto():
+    """Manual --ts-bond must clear graphRC's auto-detected TS flags and dash
+    only the user-specified pairs."""
+    import networkx as nx
+
+    from xyzrender.gif import _apply_manual_ts_bonds
+
+    g = nx.Graph()
+    g.add_edge(0, 1, TS=True)  # auto-detected by graphRC
+    g.add_edge(1, 2, TS=True)  # auto-detected by graphRC
+    g.add_edge(3, 4)  # plain bond, no TS
+
+    _apply_manual_ts_bonds(g, [(0, 1)])
+
+    assert g[0][1].get("TS") is True  # kept (user-requested)
+    assert "TS" not in g[1][2]  # auto flag cleared
+    assert "TS" not in g[3][4]
+
+
+def test_apply_manual_ts_bonds_adds_missing_edge():
+    """A user TS pair with no existing bond must be added (mirrors graphRC)."""
+    import networkx as nx
+
+    from xyzrender.gif import _apply_manual_ts_bonds
+
+    g = nx.Graph()
+    g.add_edge(0, 1, TS=True)
+
+    _apply_manual_ts_bonds(g, [(5, 9)])
+
+    assert "TS" not in g[0][1]  # auto flag cleared
+    assert g.has_edge(5, 9)
+    assert g[5][9].get("TS") is True
+
+
+def test_apply_manual_ts_bonds_noop_when_empty():
+    """Empty ts_bonds must leave graphRC's auto-detection untouched."""
+    import networkx as nx
+
+    from xyzrender.gif import _apply_manual_ts_bonds
+
+    g = nx.Graph()
+    g.add_edge(0, 1, TS=True)
+
+    _apply_manual_ts_bonds(g, [])
+
+    assert g[0][1].get("TS") is True
+
+
 def test_render_trajectory_gif_trj_bonds(tmp_path):
     """trj_bonds=True must rebuild graphs per frame, and those graphs must
     survive the orient/rotate transforms and reach the worker."""

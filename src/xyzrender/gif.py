@@ -162,6 +162,26 @@ def _copy_ts_nci_attrs(target: "nx.Graph", reference: "nx.Graph") -> None:
                     target[u][v][attr] = d[attr]
 
 
+def _apply_manual_ts_bonds(ts_graph: "nx.Graph", ts_bonds: list[tuple[int, int]]) -> None:
+    """Override graphRC's auto-detected TS bonds with a manual selection.
+
+    graphRC flags ``TS=True`` on every bond whose length changes appreciably
+    during the imaginary mode, which over-marks large flexible molecules. When
+    the user supplies ``--ts-bond`` pairs (0-indexed node ids), clear every
+    auto-detected TS flag and re-apply it to only those pairs, adding the edge
+    if it does not already exist (mirroring graphRC's own behaviour).
+    """
+    if not ts_bonds:
+        return
+    for _u, _v, d in ts_graph.edges(data=True):
+        d.pop("TS", None)
+    for i, j in ts_bonds:
+        if ts_graph.has_edge(i, j):
+            ts_graph[i][j]["TS"] = True
+        else:
+            ts_graph.add_edge(i, j, TS=True)
+
+
 def render_vibration_gif(
     path: str,
     config: RenderConfig,
@@ -216,6 +236,10 @@ def render_vibration_gif(
 
     ts_graph = results["graph"]["ts_graph"]
     frames = results["trajectory"]["frames"]
+
+    # Manual --ts-bond overrides graphRC's auto-detected TS bonds, which
+    # over-mark large flexible molecules (every bond that moves in the mode).
+    _apply_manual_ts_bonds(ts_graph, config.ts_bonds)
 
     # NCI: detect once on TS geometry, apply to all frames
     fixed_ncis = None
