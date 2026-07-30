@@ -1036,9 +1036,7 @@ def render_svg(
         # no gradient defs are needed.  Fog is applied inside the module (as
         # mo.py does) — without it the ribbon would stay fully saturated with
         # depth while the co-rendered ligand sticks recede.
-        _emit = (
-            trace_svg_items if protein_data.confidence_tier == ProteinConfidence.TRACE_ONLY else ribbon_svg_items
-        )
+        _emit = trace_svg_items if protein_data.confidence_tier == ProteinConfidence.TRACE_ONLY else ribbon_svg_items
         if protein_data.confidence_tier == ProteinConfidence.INSUFFICIENT:
             ribbon_items = []
         else:
