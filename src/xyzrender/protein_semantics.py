@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING, Any
 from xyzrender.types import ChainData, ProteinConfidence, ProteinSemantics, ResidueData
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import networkx as nx
 
     from xyzrender.parsers import MolData
@@ -68,6 +70,17 @@ def _map_confidence_tier(value: Any) -> ProteinConfidence:
     return ProteinConfidence.INSUFFICIENT
 
 
+def _getter(obj: Any) -> Callable[..., Any]:
+    """Return a ``get(key, default)`` accessor working on dicts or attribute objects.
+
+    xyzgraph may hand back either dataclasses or the plain-dict payload form,
+    so every field read goes through one of these.
+    """
+    if isinstance(obj, dict):
+        return lambda key, default=None: obj.get(key, default)
+    return lambda key, default=None: getattr(obj, key, default)
+
+
 def _to_xyzrender_semantics(xg_sem: Any) -> ProteinSemantics:
     """Convert xyzgraph protein semantics payload/dataclasses into xyzrender types."""
     chains_in = getattr(xg_sem, "chains", None)
@@ -84,7 +97,7 @@ def _to_xyzrender_semantics(xg_sem: Any) -> ProteinSemantics:
             if residues_obj is None:
                 residues_obj = []
             for r in residues_obj:
-                get = r.get if isinstance(r, dict) else lambda k, default=None, _r=r: getattr(_r, k, default)
+                get = _getter(r)
                 residues.append(
                     ResidueData(
                         res_name=str(get("res_name", "UNK")),
@@ -107,7 +120,7 @@ def _to_xyzrender_semantics(xg_sem: Any) -> ProteinSemantics:
             )
             chains[str(cid)] = ChainData(chain_id=chain_id, residues=residues)
 
-    get_top = xg_sem.get if isinstance(xg_sem, dict) else lambda k, default=None: getattr(xg_sem, k, default)
+    get_top = _getter(xg_sem)
     return ProteinSemantics(
         chains=chains,
         hetatm_indices={int(i) for i in get_top("hetatm_indices", set())},
@@ -236,6 +249,20 @@ def _canonical_annotations(
     return None
 
 
+def xyzgraph_protein_available() -> bool:
+    """Report whether the installed xyzgraph provides the protein semantics API.
+
+    Protein rendering hard-depends on ``xyzgraph.protein``; older releases do
+    not ship it.  Tests use this to skip rather than fail, and callers can use
+    it to give a better message than the raised :class:`ImportError`.
+    """
+    try:
+        mod = importlib.import_module("xyzgraph.protein")
+    except ImportError:
+        return False
+    return all(hasattr(mod, n) for n in ("annotate_protein_semantics", "protein_semantics_from_dict"))
+
+
 def _extract_from_xyzgraph(
     graph: "nx.Graph",
     *,
@@ -244,29 +271,27 @@ def _extract_from_xyzgraph(
     protein_requested: bool,
     format_hint: str | None,
 ) -> ProteinSemantics | None:
-    # Deliberately loud.  This is the ONLY real secondary-structure source; the
-    # remaining fallbacks label every residue coil.  Swallowing the import error
-    # here silently degrades every protein render to a coil-only trace with no
-    # helices, sheets or arrowheads — a failure that is invisible in the output
-    # and was the single largest cause of bad renders in draft PR #96.
-    try:
-        protein_mod = importlib.import_module("xyzgraph.protein")
-    except ImportError as exc:  # pragma: no cover - depends on installed xyzgraph
+    # Deliberately loud when the user asked for a protein render.  This is the
+    # ONLY real secondary-structure source; the remaining fallbacks label every
+    # residue coil.  Swallowing the import error silently degrades every protein
+    # render to a coil-only trace with no helices, sheets or arrowheads -- a
+    # failure that is invisible in the output and was the single largest cause of
+    # bad renders in draft PR #96.  Semantics extraction also runs speculatively
+    # on every load, though, so when nothing protein-specific was requested a
+    # missing module just means "no semantics", not an error.
+    if not xyzgraph_protein_available():
+        if not protein_requested:
+            return None
         msg = (
             "protein rendering requires a build of xyzgraph that provides "
-            "`xyzgraph.protein` (secondary-structure assignment). The installed "
-            "xyzgraph does not. Install/upgrade xyzgraph, then retry."
-        )
-        raise ImportError(msg) from exc
-    annotate_protein_semantics = getattr(protein_mod, "annotate_protein_semantics", None)
-    protein_semantics_from_dict = getattr(protein_mod, "protein_semantics_from_dict", None)
-    if annotate_protein_semantics is None or protein_semantics_from_dict is None:
-        msg = (
-            "`xyzgraph.protein` is present but does not export "
-            "annotate_protein_semantics / protein_semantics_from_dict; "
-            "the installed xyzgraph is too old for protein rendering."
+            "`xyzgraph.protein` with annotate_protein_semantics / "
+            "protein_semantics_from_dict (secondary-structure assignment). "
+            "The installed xyzgraph does not. Install/upgrade xyzgraph, then retry."
         )
         raise ImportError(msg)
+    protein_mod = importlib.import_module("xyzgraph.protein")
+    annotate_protein_semantics = protein_mod.annotate_protein_semantics
+    protein_semantics_from_dict = protein_mod.protein_semantics_from_dict
 
     annotations = _canonical_annotations(moldata=moldata, source_path=source_path, format_hint=format_hint)
     report = annotate_protein_semantics(

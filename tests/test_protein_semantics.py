@@ -8,7 +8,13 @@ import numpy as np
 import pytest
 
 from xyzrender import load, render
+from xyzrender.protein_semantics import xyzgraph_protein_available
 from xyzrender.types import ProteinConfidence
+
+pytestmark = pytest.mark.skipif(
+    not xyzgraph_protein_available(),
+    reason="installed xyzgraph does not provide xyzgraph.protein",
+)
 
 
 def test_extxyz_canonical_semantics(tmp_path):

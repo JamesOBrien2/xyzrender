@@ -11,6 +11,7 @@ import pytest
 
 from xyzrender import build_config, load, measure, render, render_gif
 from xyzrender.api import Molecule, SVGResult
+from xyzrender.protein_semantics import xyzgraph_protein_available
 
 STRUCTURES = Path(__file__).parent.parent / "examples" / "structures"
 
@@ -125,6 +126,10 @@ def test_render_accepts_path():
     assert isinstance(result, SVGResult)
 
 
+@pytest.mark.skipif(
+    not xyzgraph_protein_available(),
+    reason="installed xyzgraph does not provide xyzgraph.protein",
+)
 def test_render_protein_default_ghosts_off_for_cell_data(monkeypatch, caffeine_cell):
     captured: dict[str, bool] = {}
 
@@ -138,6 +143,10 @@ def test_render_protein_default_ghosts_off_for_cell_data(monkeypatch, caffeine_c
     assert captured["ghosts"] is False
 
 
+@pytest.mark.skipif(
+    not xyzgraph_protein_available(),
+    reason="installed xyzgraph does not provide xyzgraph.protein",
+)
 def test_render_protein_explicit_ghosts_true_overrides_default(monkeypatch, caffeine_cell):
     captured: dict[str, bool] = {}
 

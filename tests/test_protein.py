@@ -11,10 +11,19 @@ import pytest
 from xyzrender import load, render
 from xyzrender.colors import resolve_color
 from xyzrender.parsers import parse_pdb
+from xyzrender.protein_semantics import xyzgraph_protein_available
 from xyzrender.readers import filter_ligand_protein_nci
 from xyzrender.types import ChainData, ProteinData, ResidueData
 
 STRUCTURES = Path(__file__).parent.parent / "examples" / "structures"
+
+# Ribbon rendering hard-depends on `xyzgraph.protein`, which older xyzgraph
+# releases do not ship.  Skip rather than fail so the suite stays green on an
+# environment that predates it; see protein_semantics.xyzgraph_protein_available.
+pytestmark = pytest.mark.skipif(
+    not xyzgraph_protein_available(),
+    reason="installed xyzgraph does not provide xyzgraph.protein",
+)
 
 
 def _require_protein_data(data: ProteinData | None) -> ProteinData:
