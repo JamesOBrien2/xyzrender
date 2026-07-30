@@ -238,6 +238,44 @@ class OverlayConfig:
 
 
 @dataclass
+class GlowGroup:
+    """One set of atoms glowed together, with its own colour and geometry.
+
+    The glow circle is emitted in the same depth slot as its atom, so nearer
+    geometry occludes it and it never tints bonds that were drawn earlier.
+
+    Parameters
+    ----------
+    indices:
+        0-indexed atom indices to glow.
+    color:
+        Resolved hex colour of the glow, or ``None`` to use each atom's own
+        display colour (the original ``--glow`` behaviour).
+    opacity:
+        Fill opacity of the glow circle, 0-1.  Note that with ``scale`` above
+        1 the blurred circles of neighbouring atoms overlap and their alpha
+        compounds, so values below 1 read unevenly on dense selections.
+    scale:
+        Glow radius as a multiple of the atom display radius.  1.0 keeps the
+        glow behind the sphere, so only the blur bleed shows as a rim.
+    strength:
+        Gaussian blur ``stdDeviation``, in output pixels -- independent of the
+        atom's size, so every glow in a render is equally soft.
+    """
+
+    indices: list[int]
+    color: str | None = None
+    opacity: float = 1.0
+    scale: float = 1.0
+    strength: float = 5.0
+    _index_set: set[int] = field(default_factory=set, repr=False, init=False)
+
+    def __post_init__(self) -> None:
+        """Pre-compute the index set for O(1) membership checks."""
+        self._index_set = set(self.indices)
+
+
+@dataclass
 class RenderConfig:
     """Rendering settings."""
 
@@ -364,8 +402,11 @@ class RenderConfig:
     dof: bool = False
     dof_strength: float = 3.0  # max blur stdDeviation in SVG units
     # Atom glow (blurred duplicate circle rendered under selected atoms)
+    # `glow_indices` / `glow_strength` are the original single-group form and
+    # still work; `glow_groups`, when non-empty, supersedes them.
     glow_indices: list[int] = field(default_factory=list)  # 0-indexed
     glow_strength: float = 5.0
+    glow_groups: list["GlowGroup"] = field(default_factory=list)
     # Overlay (nested sub-config so new per-overlay knobs slot in without churn)
     overlay: OverlayConfig = field(default_factory=OverlayConfig)
     # Ensemble

@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 
 from xyzrender.colors import resolve_color
 from xyzrender.config import SurfaceOverrides
-from xyzrender.types import GIFResult, OverlayConfig, RenderConfig, SVGResult
+from xyzrender.types import GIFResult, GlowGroup, OverlayConfig, RenderConfig, SVGResult
 from xyzrender.utils import parse_atom_indices
 
 logger = logging.getLogger(__name__)
@@ -830,8 +830,10 @@ def render(
     # --- Depth of field ---
     dof: bool = False,
     dof_strength: float | None = None,
-    glow: str | list[int] | None = None,
+    glow: "str | list[int] | list[str] | list[list[int]] | list[tuple] | None" = None,
     glow_strength: float | None = None,
+    glow_opacity: float | None = None,
+    glow_scale: float | None = None,
     # --- Overlay ---
     overlay: str | os.PathLike | Molecule | None = None,
     overlay_color: str | None = None,
@@ -1142,7 +1144,14 @@ def render(
             raise ValueError(msg)
         cfg.glow_strength = glow_strength
     if glow is not None:
-        cfg.glow_indices = sorted(_resolve_glow_indices(glow, mol.graph))
+        _apply_glow(
+            cfg,
+            mol.graph,
+            glow=glow,
+            glow_strength=glow_strength,
+            glow_opacity=glow_opacity,
+            glow_scale=glow_scale,
+        )
 
     # --- Per-atom radius scale ---
     if radius_scale is not None:
@@ -1412,8 +1421,10 @@ def render_gif(
     # --- Depth of field ---
     dof: bool = False,
     dof_strength: float | None = None,
-    glow: str | list[int] | None = None,
+    glow: "str | list[int] | list[str] | list[list[int]] | list[tuple] | None" = None,
     glow_strength: float | None = None,
+    glow_opacity: float | None = None,
+    glow_scale: float | None = None,
     # --- Structural overlay (gif_rot only) ---
     overlay: str | os.PathLike | Molecule | None = None,
     overlay_color: str | None = None,
@@ -1685,7 +1696,14 @@ def render_gif(
             raise ValueError(msg)
         cfg.glow_strength = glow_strength
     if glow is not None:
-        cfg.glow_indices = sorted(_resolve_glow_indices(glow, _gif_graph))
+        _apply_glow(
+            cfg,
+            _gif_graph,
+            glow=glow,
+            glow_strength=glow_strength,
+            glow_opacity=glow_opacity,
+            glow_scale=glow_scale,
+        )
 
     # --- Per-atom radius scale ---
     if radius_scale is not None:
@@ -2569,6 +2587,76 @@ def _resolve_atom_opacity(
         for idx in indices:
             out[idx] = fval
     return out
+
+
+def _apply_glow(
+    cfg: "RenderConfig",
+    graph: "nx.Graph",
+    *,
+    glow: "str | list[int] | list[str] | list[list[int]] | list[tuple] | None" = None,
+    glow_strength: float | None = None,
+    glow_opacity: float | None = None,
+    glow_scale: float | None = None,
+) -> None:
+    """Resolve *glow* into :class:`GlowGroup` objects on *cfg* (mutates in place).
+
+    Accepted forms, all using the full atom-selector grammar
+    (``"N,O"``, ``"1-5,8"``, ``"M"``, ``"all"``) or explicit 1-indexed lists:
+
+    - ``"N"`` -- one group
+    - ``["N", "O"]`` / ``[[1, 2], [3, 4]]`` -- several groups
+    - ``[("N", "gold"), ("O", "steelblue")]`` -- several groups, each coloured
+
+    A group with no colour glows in each atom's own display colour, which is
+    what plain ``--glow`` has always done.
+    """
+    if glow is None:
+        cfg.glow_groups = []
+        return
+
+    raw: list[tuple[str | list[int], str | None]]
+    if isinstance(glow, str):
+        raw = [(glow, None)]
+    elif isinstance(glow, list) and glow:
+        first = glow[0]
+        if isinstance(first, int):
+            raw = [(cast("list[int]", glow), None)]
+        elif isinstance(first, str):
+            raw = [(cast("str", s), None) for s in glow]
+        elif isinstance(first, list):
+            raw = [(cast("list[int]", sub), None) for sub in glow]
+        elif isinstance(first, tuple):
+            raw = []
+            for entry in glow:
+                if not isinstance(entry, tuple):
+                    msg = f"glow entry must be a tuple, got {type(entry)}"
+                    raise TypeError(msg)
+                raw.append((entry[0], entry[1] if len(entry) > 1 else None))
+        else:
+            msg = f"unexpected glow element type: {type(first)}"
+            raise TypeError(msg)
+    else:
+        cfg.glow_groups = []
+        return
+
+    groups: list[GlowGroup] = []
+    for atoms_spec, color_spec in raw:
+        indices = sorted(_resolve_glow_indices(atoms_spec, graph))
+        if not indices:
+            continue
+        g = GlowGroup(indices=indices, color=resolve_color(color_spec) if color_spec is not None else None)
+        if glow_strength is not None:
+            g.strength = glow_strength
+        if glow_opacity is not None:
+            g.opacity = glow_opacity
+        if glow_scale is not None:
+            g.scale = glow_scale
+        groups.append(g)
+
+    cfg.glow_groups = groups
+    # Keep the legacy single-group field in step so code reading it still sees
+    # the selection; the renderer prefers `glow_groups` when it is non-empty.
+    cfg.glow_indices = sorted({i for g in groups for i in g.indices})
 
 
 def _resolve_glow_indices(
