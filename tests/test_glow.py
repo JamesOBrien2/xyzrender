@@ -115,8 +115,22 @@ def test_glow_blur_is_pixel_space_not_relative_to_atom_size(caffeine):
     which used objectBoundingBox units and so blurred large atoms more.
     """
     svg = str(render(caffeine, glow="all", glow_strength=6.0, orient=False))
+    filters = re.findall(r"<filter id=\"\w*glow\d+\"[^>]*>", svg)
+    assert len(filters) == 1, "one strength should need exactly one filter"
+    assert "objectBoundingBox" not in filters[0]
+    assert "primitiveUnits" not in filters[0]
     assert svg.count('stdDeviation="6.00"') == 1
-    assert "objectBoundingBox" not in svg
+
+
+def test_config_glow_strength_survives_a_selector(caffeine):
+    """A RenderConfig carrying glow_strength must not be overridden by the default.
+
+    render(config=cfg, glow=...) reaches _apply_glow with glow_strength=None;
+    the group has to inherit cfg.glow_strength rather than fall back to 5.0.
+    """
+    svg = str(render(caffeine, config=RenderConfig(glow_strength=9.0), glow="N", orient=False))
+    assert 'stdDeviation="9.00"' in svg
+    assert 'stdDeviation="5.00"' not in svg
 
 
 def test_glow_is_occluded_by_nearer_atoms(caffeine):
@@ -138,3 +152,15 @@ def test_empty_selection_yields_no_groups(caffeine):
     cfg = RenderConfig()
     _apply_glow(cfg, caffeine.graph, glow="Xe")
     assert cfg.glow_groups == []
+
+
+def test_selection_uses_original_indices_under_an_atom_filter(caffeine):
+    """--glow resolves twice (CLI, then render); both must use original indices.
+
+    With `only=`, the render-time graph is renumbered, so a stale second
+    resolution would glow the wrong atoms.
+    """
+    svg = str(render(caffeine, glow=[("9-12", "gold")], only="9-24", orient=False, fog=False))
+    circles = _glow_circles(svg)
+    assert len(circles) == 4
+    assert all("#ffd700" in c for c in circles)

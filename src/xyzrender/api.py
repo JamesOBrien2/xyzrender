@@ -2645,8 +2645,9 @@ def _apply_glow(
         if not indices:
             continue
         g = GlowGroup(indices=indices, color=resolve_color(color_spec) if color_spec is not None else None)
-        if glow_strength is not None:
-            g.strength = glow_strength
+        # No explicit strength => inherit whatever the config carries, so a
+        # RenderConfig(glow_strength=...) passed as `config=` is still honoured.
+        g.strength = glow_strength if glow_strength is not None else cfg.glow_strength
         if glow_opacity is not None:
             g.opacity = glow_opacity
         if glow_scale is not None:
