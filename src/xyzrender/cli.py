@@ -78,8 +78,10 @@ Styling:
   --grad / --no-grad      Atom gradients on/off
   --fog / --no-fog        Depth fog on/off
   --dof                   Depth of field - blur "back" atoms (not bonds)
-  --glow ATOMS            Add blurred glow under selected atoms
-  --glow-strength F       Glow blur strength (default: 5.0)
+  --glow ATOMS [COLOR]    Add blurred glow under selected atoms (repeatable)
+  --glow-strength F       Glow blur strength in px (default: 5.0)
+  --glow-opacity F        Glow fill opacity (default: 1.0)
+  --glow-scale F          Glow radius x atom radius (default: 1.0)
 
 Display:
   --hy [ATOMS] / --no-hy  Show/hide H atoms (all or specific indices)
@@ -147,6 +149,16 @@ Crystal:
 
 Run 'xyzrender --help' for full details on every option.
 """
+
+
+def _glow_groups_arg(args: "argparse.Namespace", p: "argparse.ArgumentParser") -> list[tuple[str, ...]] | None:
+    """Normalise repeated ``--glow ATOMS [COLOR]`` into the API's tuple form."""
+    if args.glow is None:
+        return None
+    for entry in args.glow:
+        if len(entry) > 2:
+            p.error(f"--glow takes 1-2 arguments (ATOMS [COLOR]), got {len(entry)}")
+    return [tuple(e) for e in args.glow]
 
 
 def main() -> None:
@@ -727,37 +739,6 @@ def main() -> None:
         help='Highlight atom group: --hl "1-5,8" [color]. Can be repeated. Auto-colors if no color given.',
     )
 
-    # --- Atom halos ---
-    halo_g = p.add_argument_group("atom halos")
-    halo_g.add_argument(
-        "--halo",
-        nargs="+",
-        action="append",
-        default=None,
-        metavar=("ATOMS", "COLOR"),
-        help='Draw a glow halo behind atoms: --halo "1-5" [color]. Can be repeated. Auto-colors if no color.',
-    )
-    halo_g.add_argument(
-        "--halo-opacity",
-        type=float,
-        default=None,
-        metavar="FLOAT",
-        help="Halo fill opacity, 0-1 (default 0.35).",
-    )
-    halo_g.add_argument(
-        "--halo-scale",
-        type=float,
-        default=None,
-        metavar="FLOAT",
-        help="Halo radius as a multiple of the atom display radius (default 2.0).",
-    )
-    halo_g.add_argument(
-        "--no-halo-blur",
-        action="store_true",
-        default=False,
-        help="Disable the soft Gaussian blur on halo circles.",
-    )
-
     # --- Protein ribbon ---
     prot_g = p.add_argument_group("protein ribbon")
     prot_g.add_argument(
@@ -873,16 +854,38 @@ def main() -> None:
     )
     dof_g.add_argument(
         "--glow",
+        nargs="+",
+        action="append",
         default=None,
-        metavar="ATOMS",
-        help='Glow selected atoms with blur, e.g. "1-5,8", "N,O", "M", "all"',
+        metavar=("ATOMS", "COLOR"),
+        help=(
+            'Glow selected atoms with blur, e.g. "1-5,8", "N,O", "M", "all". '
+            'Takes an optional colour (--glow "N" gold) and can be repeated for '
+            "several groups; without a colour each atom glows in its own. "
+            "On protein input the selector may also be ligand, protein, backbone, "
+            "sidechain, water, ion or hetatm."
+        ),
     )
     dof_g.add_argument(
         "--glow-strength",
         type=float,
         default=None,
         metavar="FLOAT",
-        help="Glow blur strength (default: 5.0)",
+        help="Glow blur strength in pixels (default: 5.0)",
+    )
+    dof_g.add_argument(
+        "--glow-opacity",
+        type=float,
+        default=None,
+        metavar="FLOAT",
+        help="Glow fill opacity, 0-1 (default: 1.0)",
+    )
+    dof_g.add_argument(
+        "--glow-scale",
+        type=float,
+        default=None,
+        metavar="FLOAT",
+        help="Glow radius as a multiple of the atom display radius (default: 1.0)",
     )
 
     # --- Measurements & annotations ---
@@ -1146,14 +1149,6 @@ def main() -> None:
                 p.error(f"--hl takes 1-2 arguments (ATOMS [COLOR]), got {len(entry)}")
         _highlight = [tuple(e) for e in args.hl]
 
-    # Halo atoms (multi-group)
-    _halo: list[tuple[str, ...]] | None = None
-    if args.halo is not None:
-        for entry in args.halo:
-            if len(entry) > 2:
-                raise SystemExit(f"error: --halo takes 1-2 arguments (ATOMS [COLOR]), got {len(entry)}")
-        _halo = [tuple(e) for e in args.halo]
-
     # Bond coloring
     if args.bond_by_element is not None:
         cfg.bond_color_by_element = args.bond_by_element
@@ -1321,7 +1316,17 @@ def main() -> None:
     if args.vdw_h_scale is not None:
         cfg.vdw_h_scale = args.vdw_h_scale
     if args.glow is not None:
-        cfg.glow_indices = sorted(resolve_atom_indices(args.glow, mol.graph))
+        from xyzrender.api import _apply_glow, _best_protein_semantics
+
+        _apply_glow(
+            cfg,
+            mol.graph,
+            glow=_glow_groups_arg(args, p),
+            glow_strength=args.glow_strength,
+            glow_opacity=args.glow_opacity,
+            glow_scale=args.glow_scale,
+            protein_data=_best_protein_semantics(mol.protein_semantics, mol.protein_data),
+        )
 
     # Style regions (user-defined + preset-defined from JSON)
     from xyzrender.api import _apply_style_regions
@@ -1567,8 +1572,10 @@ def main() -> None:
             auto_align=args.align,  # None = preset default; True/False = explicit override
             vector=args.vector,
             vector_scale=args.vector_scale,
-            glow=args.glow,
+            glow=_glow_groups_arg(args, p),
             glow_strength=args.glow_strength,
+            glow_opacity=args.glow_opacity,
+            glow_scale=args.glow_scale,
             hull=_hull_arg,
             hull_color=args.hull_color,
             hull_opacity=args.hull_opacity,
@@ -1594,10 +1601,6 @@ def main() -> None:
             ligand_highlight=args.ligand_highlight,
             ligand_color=args.ligand_color,
             nci_ligand_protein_only=args.nci_ligand,
-            halo=_halo,
-            halo_opacity=args.halo_opacity,
-            halo_scale=args.halo_scale,
-            halo_blur=False if args.no_halo_blur else None,
         )
     except ValueError as e:
         p.error(str(e))
@@ -1679,8 +1682,10 @@ def main() -> None:
                 ghost_opacity=args.ghost_opacity,
                 vector=args.vector,
                 vector_scale=args.vector_scale,
-                glow=args.glow,
+                glow=_glow_groups_arg(args, p),
                 glow_strength=args.glow_strength,
+                glow_opacity=args.glow_opacity,
+                glow_scale=args.glow_scale,
                 ref=args.ref,
                 hull=_hull_arg,
                 hull_color=args.hull_color,
@@ -1694,10 +1699,6 @@ def main() -> None:
                 face_planarity=args.face_planarity,
                 pore_color=args.pore_color,
                 pore_opacity=args.pore_opacity,
-                halo=_halo,
-                halo_opacity=args.halo_opacity,
-                halo_scale=args.halo_scale,
-                halo_blur=False if args.no_halo_blur else None,
                 protein=(args.protein if args.protein is not None else False),
                 chain_colors=dict(args.chain_color) if args.chain_color else None,
                 exclude_chains=args.exclude_chains,

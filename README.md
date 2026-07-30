@@ -134,9 +134,9 @@ Full usage, the Python API guide, every flag, and runnable examples live in the 
 
 ### Highlight & molecule color
 
-| Default (orchid) | Custom colour | Multi-group | Mol color + highlight | Halo |
+| Default (orchid) | Custom colour | Multi-group | Mol color + highlight | Glow |
 |------------------|---------------|-------------|-----------------------|------|
-| ![hl](examples/images/caffeine_hl.svg) | ![hl custom](examples/images/caffeine_hl_custom.svg) | ![multi hl](examples/images/caffeine_multi_hl.svg) | ![mol color hl](examples/images/caffeine_mol_color_hl_idx.svg) | ![halo](examples/images/caffeine_halo.svg) |
+| ![hl](examples/images/caffeine_hl.svg) | ![hl custom](examples/images/caffeine_hl_custom.svg) | ![multi hl](examples/images/caffeine_multi_hl.svg) | ![mol color hl](examples/images/caffeine_mol_color_hl_idx.svg) | ![glow](examples/images/caffeine_glow.svg) |
 
 | Single atom scaled (Co ×2) | Multi-group (N,O ×1.4 + H ×0.8) | Per-atom opacity + radius scale |
 |------------------------------|----------------------------------|---------------------------------|

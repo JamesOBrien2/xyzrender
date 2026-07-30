@@ -39,7 +39,7 @@ from xyzrender.hull import (
 )
 from xyzrender.interlock import compute_interlock_polygons
 from xyzrender.mo import mo_lobe_svg_items
-from xyzrender.types import BondStyle, HaloGroup, RenderConfig
+from xyzrender.types import BondStyle, GlowGroup, RenderConfig
 from xyzrender.utils import pca_orient
 
 logger = logging.getLogger(__name__)
@@ -424,13 +424,6 @@ def render_svg(
                 colors[ai] = gc
                 hl_atom_group[ai] = gid
 
-    # Halo map: atom_idx → HaloGroup (last group wins if an atom appears in multiple)
-    halo_atom_map: dict[int, HaloGroup] = {}
-    if cfg.halo_groups:
-        for hg in cfg.halo_groups:
-            for ai in hg._index_set:
-                halo_atom_map[ai] = hg
-
     # Pre-cache hex strings so .hex property isn't recomputed in the render loop
     _color_hex = [c.hex for c in colors]
 
@@ -589,8 +582,19 @@ def render_svg(
             zr = max(pos[:, 2].max() - pos[:, 2].min(), 1e-6)
             dof_depth = np.clip((pos[:, 2].max() - pos[:, 2] - _FOG_NEAR) / zr, 0.0, 1.0)
         dof_buckets = [int(d * (n_dof_levels - 1) + 0.5) for d in dof_depth]
-    glow_indices = set(cfg.glow_indices) if cfg.glow_indices else set()
-    glow_strength = cfg.glow_strength
+    # Glow groups.  `glow_groups` is the general form; the older single-group
+    # `glow_indices` / `glow_strength` pair is promoted to one uncoloured group
+    # so both spellings go down the same path.  Later groups win on overlap.
+    _glow_groups = list(cfg.glow_groups)
+    if not _glow_groups and cfg.glow_indices:
+        _glow_groups = [GlowGroup(indices=list(cfg.glow_indices), strength=cfg.glow_strength)]
+    glow_atom_map: dict[int, GlowGroup] = {}
+    for gg in _glow_groups:
+        for ai_g in gg._index_set:
+            glow_atom_map[ai_g] = gg
+    # One blur filter per distinct strength, keyed by its index in this list.
+    _glow_strengths = sorted({gg.strength for gg in _glow_groups})
+    _glow_filter_id = {s: f"glow{k}" for k, s in enumerate(_glow_strengths)}
 
     # --- Build SVG ---
     svg = [
@@ -612,12 +616,13 @@ def render_svg(
                 f'<feGaussianBlur stdDeviation="{blur:.2f}"/></filter>'
             )
         svg.append("  </defs>")
-    if glow_indices:
+    if glow_atom_map:
         svg.append("  <defs>")
-        svg.append(
-            f'    <filter id="glow" x="-100%" y="-100%" width="300%" height="300%">'
-            f'<feGaussianBlur stdDeviation="{glow_strength:.2f}"/></filter>'
-        )
+        for _s in _glow_strengths:
+            svg.append(
+                f'    <filter id="{_glow_filter_id[_s]}" x="-100%" y="-100%" width="300%" height="300%">'
+                f'<feGaussianBlur stdDeviation="{_s:.2f}"/></filter>'
+            )
         svg.append("  </defs>")
 
     # Per-atom gradient and skeletal flags (style-region aware)
@@ -725,14 +730,6 @@ def render_svg(
                     f"</radialGradient>"
                 )
         svg.append("  </defs>")
-
-    # Halo blur filter def (one filter shared by all halo circles)
-    if halo_atom_map and any(hg.blur for hg in cfg.halo_groups):
-        svg.append(
-            '  <defs><filter id="halo_blur" filterUnits="objectBoundingBox" '
-            'primitiveUnits="objectBoundingBox" x="-100%" y="-100%" width="300%" height="300%">'
-            '<feGaussianBlur stdDeviation="0.2"/></filter></defs>'
-        )
 
     # --- Convex hull facets (low-alpha plane behind molecule) ---
     if cfg.show_convex_hull:
@@ -1710,15 +1707,6 @@ def render_svg(
             atom_op = min(atom_op, _atom_only_op[ai])
         op_attr_atom = f' opacity="{atom_op:.2f}"' if atom_op < 1.0 else ""
 
-        # Halo circle (drawn before atom so the atom sphere appears on top)
-        if halo_atom_map and (hg := halo_atom_map.get(ai)) is not None:
-            halo_r = radii[ai] * hg.scale * scale
-            blur_attr = ' filter="url(#halo_blur)"' if hg.blur else ""
-            svg.append(
-                f'  <circle cx="{xi:.1f}" cy="{yi:.1f}" r="{halo_r:.1f}" '
-                f'fill="{hg.color}" fill-opacity="{hg.opacity:.2f}" stroke="none"{blur_attr}/>'
-            )
-
         # Atom graphics / labels — per-atom config for style regions.
         # NCI centroid nodes ("*") are structural overlays — always use the
         # base config so they stay visible regardless of region styling.
@@ -1777,13 +1765,19 @@ def render_svg(
             else:
                 _shape_geom = f'<circle cx="{xi:.1f}" cy="{yi:.1f}" r="{_r_px:.1f}"'
 
-            if ai in glow_indices:
-                _glow_fill = colors[ai].blend(WHITE, acfg.atom_wash).hex if acfg.atom_wash > 0 else _color_hex[ai]
+            if (_gg := glow_atom_map.get(ai)) is not None:
+                if _gg.color is not None:
+                    _glow_fill = _gg.color
+                else:
+                    _glow_fill = colors[ai].blend(WHITE, acfg.atom_wash).hex if acfg.atom_wash > 0 else _color_hex[ai]
                 if cfg.fog:
                     _glow_fill = blend_fog(_glow_fill, fog_rgb, fog_f[ai])
+                _glow_op = min(atom_op, _gg.opacity)
+                _glow_op_attr = f' fill-opacity="{_glow_op:.2f}"' if _glow_op < 1.0 else ""
                 svg.append(
-                    f'  <circle cx="{xi:.1f}" cy="{yi:.1f}" r="{_r_px:.1f}" '
-                    f'fill="{_glow_fill}" filter="url(#glow)"{op_attr_atom}/>'
+                    f'  <circle cx="{xi:.1f}" cy="{yi:.1f}" r="{_r_px * _gg.scale:.1f}" '
+                    f'fill="{_glow_fill}"{_glow_op_attr} '
+                    f'filter="url(#{_glow_filter_id[_gg.strength]})"/>'
                 )
             if _grad_ai:
                 # Inline gradient def when no shared def exists for this atom:

@@ -508,23 +508,55 @@ def test_ligand_highlight_recolors_ligands(hetatm_pdb):
     assert svg_lig_a != svg_lig_b
 
 
-def test_ligand_halo_selector_uses_ligand_color(hetatm_pdb):
-    """halo='ligand' should target semantic ligands and reuse ligand_color when provided."""
+def _glow_circles(svg: str) -> list[str]:
+    import re
+
+    return [m.group(0) for m in re.finditer(r"<circle[^>]*filter=\"url\(#\w*glow\d+\)\"[^>]*/>", svg)]
+
+
+def test_ligand_glow_selector_uses_ligand_color(hetatm_pdb):
+    """glow='ligand' should target semantic ligands and reuse ligand_color when provided."""
     mol = load(hetatm_pdb)
     svg = str(
         render(
             mol,
             config="flat",
-            halo="ligand",
+            glow="ligand",
             ligand_color="#12ab34",
-            halo_blur=False,
             orient=False,
             gradient=False,
+            fog=False,
         )
     )
-    halos = [ln for ln in svg.splitlines() if "fill-opacity" in ln and 'stroke="none"' in ln]
-    assert len(halos) == 2  # two ligand HETATM atoms in fixture
-    assert resolve_color("#12ab34") in svg
+    circles = _glow_circles(svg)
+    assert len(circles) == 2  # two ligand HETATM atoms in fixture
+    assert all(resolve_color("#12ab34") in c for c in circles)
+
+
+def test_glow_semantic_tokens_resolve_against_semantics(hetatm_class_pdb):
+    """'water' and 'ion' pick out their own HETATM classes, not the whole file."""
+    mol = load(hetatm_class_pdb)
+    svg = str(render(mol, config="flat", glow=[("water", "blue"), ("ion", "red")], orient=False, fog=False))
+    circles = _glow_circles(svg)
+    fills = [resolve_color(c) for c in ("blue", "red")]
+    assert len(circles) == 2
+    assert sorted(f for f in fills if any(f in c for c in circles)) == sorted(fills)
+
+
+def test_glow_semantic_token_warns_without_semantics(caplog):
+    """A semantic token on a plain molecule warns and selects nothing."""
+    mol = load(STRUCTURES / "caffeine.xyz")
+    with caplog.at_level("WARNING", logger="xyzrender.api"):
+        svg = str(render(mol, glow="ligand", orient=False))
+    assert _glow_circles(svg) == []
+    assert "no matching protein semantics are available" in caplog.text
+
+
+def test_glow_element_selector_still_works_on_a_protein(hetatm_pdb):
+    """Semantic tokens are additive: the element grammar must still resolve."""
+    mol = load(hetatm_pdb)
+    svg = str(render(mol, config="flat", glow="O", orient=False, fog=False))
+    assert len(_glow_circles(svg)) == 2  # backbone O + ligand O1
 
 
 def test_protein_mode_keeps_nci_dotted_edges_when_backbone_hidden():

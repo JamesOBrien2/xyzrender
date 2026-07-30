@@ -51,7 +51,14 @@ from xyzrender.ribbon import (
     normalize_ribbon_style,
     ribbon_style_names,
 )
-from xyzrender.types import GIFResult, OverlayConfig, ProteinConfidence, RenderConfig, SVGResult
+from xyzrender.types import (
+    GIFResult,
+    GlowGroup,
+    OverlayConfig,
+    ProteinConfidence,
+    RenderConfig,
+    SVGResult,
+)
 from xyzrender.utils import parse_atom_indices
 
 logger = logging.getLogger(__name__)
@@ -969,8 +976,10 @@ def render(
     # --- Depth of field ---
     dof: bool = False,
     dof_strength: float | None = None,
-    glow: str | list[int] | None = None,
+    glow: "str | list[int] | list[str] | list[list[int]] | list[tuple] | None" = None,
     glow_strength: float | None = None,
+    glow_opacity: float | None = None,
+    glow_scale: float | None = None,
     # --- Overlay ---
     overlay: str | os.PathLike | Molecule | None = None,
     overlay_color: str | None = None,
@@ -991,11 +1000,6 @@ def render(
     ligand_color: str | None = None,
     # --- NCI bond filtering ---
     nci_ligand_protein_only: bool = False,
-    # --- Atom halos ---
-    halo: "str | list[int] | list[list[int] | str] | list[tuple] | None" = None,
-    halo_opacity: float | None = None,
-    halo_scale: float | None = None,
-    halo_blur: bool | None = None,
     # --- Output ---
     output: str | os.PathLike | None = None,
 ) -> SVGResult:
@@ -1276,17 +1280,6 @@ def render(
     _sem_for_selectors = _best_protein_semantics(mol.protein_semantics, mol.protein_data)
     _apply_highlight(cfg, highlight=highlight, graph=mol.graph, protein_data=_sem_for_selectors)
 
-    # --- Halos ---
-    _apply_halo(
-        cfg,
-        halo=halo,
-        halo_opacity=halo_opacity,
-        halo_scale=halo_scale,
-        halo_blur=halo_blur,
-        protein_data=_sem_for_selectors,
-        ligand_color=ligand_color,
-    )
-
     # --- Style regions (user + preset-defined) ---
     _apply_style_regions(cfg, mol.graph, regions=regions)
 
@@ -1311,7 +1304,16 @@ def render(
             raise ValueError(msg)
         cfg.glow_strength = glow_strength
     if glow is not None:
-        cfg.glow_indices = sorted(_resolve_glow_indices(glow, mol.graph))
+        _apply_glow(
+            cfg,
+            mol.graph,
+            glow=glow,
+            glow_strength=glow_strength,
+            glow_opacity=glow_opacity,
+            glow_scale=glow_scale,
+            protein_data=_sem_for_selectors,
+            ligand_color=ligand_color,
+        )
 
     # --- Per-atom radius scale ---
     if radius_scale is not None:
@@ -1645,8 +1647,10 @@ def render_gif(
     # --- Depth of field ---
     dof: bool = False,
     dof_strength: float | None = None,
-    glow: str | list[int] | None = None,
+    glow: "str | list[int] | list[str] | list[list[int]] | list[tuple] | None" = None,
     glow_strength: float | None = None,
+    glow_opacity: float | None = None,
+    glow_scale: float | None = None,
     # --- Structural overlay (gif_rot only) ---
     overlay: str | os.PathLike | Molecule | None = None,
     overlay_color: str | None = None,
@@ -1701,11 +1705,6 @@ def render_gif(
     cell_color: str | None = None,
     cell_width: float | None = None,
     ghost_opacity: float | None = None,
-    # --- Atom halos ---
-    halo: "str | list[int] | list[list[int] | str] | list[tuple] | None" = None,
-    halo_opacity: float | None = None,
-    halo_scale: float | None = None,
-    halo_blur: bool | None = None,
     # --- Protein ribbon ---
     protein: bool | str = False,
     chain_colors: dict[str, str] | None = None,
@@ -1916,17 +1915,6 @@ def render_gif(
     _sem_for_selectors = _best_protein_semantics(_gif_mol.protein_semantics, _gif_mol.protein_data)
     _apply_highlight(cfg, highlight=highlight, graph=_gif_graph, protein_data=_sem_for_selectors)
 
-    # --- Halos ---
-    _apply_halo(
-        cfg,
-        halo=halo,
-        halo_opacity=halo_opacity,
-        halo_scale=halo_scale,
-        halo_blur=halo_blur,
-        protein_data=_sem_for_selectors,
-        ligand_color=ligand_color,
-    )
-
     # --- Protein ribbon ---
     _protein_enabled, _protein_style = _resolve_protein_mode(protein)
     if _protein_enabled:
@@ -1980,7 +1968,16 @@ def render_gif(
             raise ValueError(msg)
         cfg.glow_strength = glow_strength
     if glow is not None:
-        cfg.glow_indices = sorted(_resolve_glow_indices(glow, _gif_graph))
+        _apply_glow(
+            cfg,
+            _gif_graph,
+            glow=glow,
+            glow_strength=glow_strength,
+            glow_opacity=glow_opacity,
+            glow_scale=glow_scale,
+            protein_data=_sem_for_selectors,
+            ligand_color=ligand_color,
+        )
 
     # --- Per-atom radius scale ---
     if radius_scale is not None:
@@ -2629,6 +2626,28 @@ def _remap_original_atom_index(idx_1based: int, mapping: dict[int, int] | None, 
     return mapping[original]
 
 
+# Selector tokens that only mean anything once protein semantics have been
+# extracted.  Chain IDs are deliberately absent: a bare "C" would be ambiguous
+# with the element selector, and --exclude-chains already covers chains.
+SEMANTIC_SELECTOR_TOKENS: dict[str, tuple[str, ...]] = {
+    "ligand": ("ligand_indices",),
+    "water": ("water_indices",),
+    "ion": ("ion_indices",),
+    "hetatm": ("hetatm_indices",),
+    "backbone": ("backbone_indices",),
+    "sidechain": ("sidechain_indices",),
+    "protein": ("backbone_indices", "sidechain_indices"),
+}
+
+
+def _semantic_selector_token(atoms_spec: "str | list[int]") -> str | None:
+    """Return the semantic token *atoms_spec* names, or ``None`` if it isn't one."""
+    if not isinstance(atoms_spec, str):
+        return None
+    token = atoms_spec.strip().lower()
+    return token if token in SEMANTIC_SELECTOR_TOKENS else None
+
+
 def _resolve_semantic_selector_indices(
     atoms_spec: "str | list[int]",
     *,
@@ -2637,18 +2656,22 @@ def _resolve_semantic_selector_indices(
 ) -> list[int]:
     """Resolve atom selector specs to 0-indexed atom indices.
 
-    Supports canonical numeric selectors plus the semantic selector token
-    ``"ligand"`` when protein semantics are available.
+    Supports canonical numeric selectors plus the semantic selector tokens in
+    :data:`SEMANTIC_SELECTOR_TOKENS`, which need protein semantics to resolve.
     """
-    if isinstance(atoms_spec, str) and atoms_spec.strip() == "ligand":
-        ligand_indices = set(getattr(protein_data, "ligand_indices", set()) or set())
-        if not ligand_indices:
+    token = _semantic_selector_token(atoms_spec)
+    if token is not None:
+        indices: set[int] = set()
+        for attr in SEMANTIC_SELECTOR_TOKENS[token]:
+            indices |= set(getattr(protein_data, attr, set()) or set())
+        if not indices:
             logger.warning(
-                "%s selector 'ligand' requested but no ligand semantics are available; skipping this selector",
+                "%s selector %r requested but no matching protein semantics are available; skipping this selector",
                 context,
+                token,
             )
             return []
-        return sorted(int(i) for i in ligand_indices)
+        return sorted(int(i) for i in indices)
     return parse_atom_indices(atoms_spec)
 
 
@@ -2748,84 +2771,6 @@ def _apply_highlight(
         groups.append(HighlightGroup(indices=indices, color=color))
 
     cfg.highlight_groups = groups
-
-
-def _apply_halo(
-    cfg: "RenderConfig",
-    *,
-    halo: "str | list[int] | list[list[int] | str] | list[tuple] | None" = None,
-    halo_opacity: float | None = None,
-    halo_scale: float | None = None,
-    halo_blur: bool | None = None,
-    protein_data: "ProteinData | ProteinSemantics | None" = None,
-    ligand_color: str | None = None,
-) -> None:
-    """Apply halo glow groups to *cfg* (mutates in place).
-
-    Accepts the same atom-specifier forms as :func:`_apply_highlight`.
-    Atom indices are 1-indexed.
-    """
-    if halo is None:
-        return
-
-    from typing import cast
-
-    from xyzrender.types import HaloGroup
-
-    palette = cfg.highlight_colors
-    groups: list[HaloGroup] = []
-
-    raw_groups: list[tuple[str | list[int], str | None]]
-
-    if isinstance(halo, str):
-        raw_groups = [(halo, None)]
-    elif isinstance(halo, list) and halo:
-        first = halo[0]
-        if isinstance(first, int):
-            raw_groups = [(cast("list[int]", halo), None)]
-        elif isinstance(first, str):
-            raw_groups = [(cast("str", s), None) for s in halo]
-        elif isinstance(first, list):
-            raw_groups = [(cast("list[int]", sub), None) for sub in halo]
-        elif isinstance(first, tuple):
-            raw_groups = []
-            for entry in halo:
-                if isinstance(entry, tuple):
-                    atoms_spec = entry[0]
-                    color_spec = entry[1] if len(entry) > 1 else None
-                    raw_groups.append((atoms_spec, color_spec))
-                else:
-                    msg = f"halo entry must be a tuple, got {type(entry)}"
-                    raise TypeError(msg)
-        else:
-            msg = f"unexpected halo element type: {type(first)}"
-            raise TypeError(msg)
-    else:
-        return
-
-    auto_idx = 0
-    for atoms_spec, color_spec in raw_groups:
-        _is_ligand_selector = isinstance(atoms_spec, str) and atoms_spec.strip() == "ligand"
-        indices = _resolve_semantic_selector_indices(atoms_spec, protein_data=protein_data, context="halo")
-        if not indices:
-            continue
-        if color_spec is not None:
-            color = resolve_color(color_spec)
-        elif _is_ligand_selector and ligand_color is not None:
-            color = resolve_color(ligand_color)
-        else:
-            color = resolve_color(palette[auto_idx % len(palette)])
-            auto_idx += 1
-        g = HaloGroup(indices=indices, color=color)
-        if halo_opacity is not None:
-            g.opacity = halo_opacity
-        if halo_scale is not None:
-            g.scale = halo_scale
-        if halo_blur is not None:
-            g.blur = halo_blur
-        groups.append(g)
-
-    cfg.halo_groups = groups
 
 
 def _apply_style_regions(
@@ -3016,6 +2961,98 @@ def _resolve_atom_opacity(
         for idx in indices:
             out[idx] = fval
     return out
+
+
+def _apply_glow(
+    cfg: "RenderConfig",
+    graph: "nx.Graph",
+    *,
+    glow: "str | list[int] | list[str] | list[list[int]] | list[tuple] | None" = None,
+    glow_strength: float | None = None,
+    glow_opacity: float | None = None,
+    glow_scale: float | None = None,
+    protein_data: "ProteinData | ProteinSemantics | None" = None,
+    ligand_color: str | None = None,
+) -> None:
+    """Resolve *glow* into :class:`GlowGroup` objects on *cfg* (mutates in place).
+
+    Accepted forms, all using the full atom-selector grammar
+    (``"N,O"``, ``"1-5,8"``, ``"M"``, ``"all"``) or explicit 1-indexed lists:
+
+    - ``"N"`` -- one group
+    - ``["N", "O"]`` / ``[[1, 2], [3, 4]]`` -- several groups
+    - ``[("N", "gold"), ("O", "steelblue")]`` -- several groups, each coloured
+
+    A selector may also be one of the semantic tokens in
+    :data:`SEMANTIC_SELECTOR_TOKENS` (``"ligand"``, ``"protein"``,
+    ``"sidechain"``, ...), which resolve against *protein_data* -- so
+    ``--glow ligand gold`` picks the bound ligand out of a structure without
+    the user having to look up its atom numbers.  Those tokens resolve to
+    nothing (with a warning) when no protein semantics were extracted.
+    An uncoloured ``"ligand"`` group picks up *ligand_color* when one is set,
+    so the glow matches the recoloured ligand rather than fighting it.
+
+    A group with no colour glows in each atom's own display colour, which is
+    what plain ``--glow`` has always done.
+    """
+    if glow is None:
+        cfg.glow_groups = []
+        return
+
+    raw: list[tuple[str | list[int], str | None]]
+    if isinstance(glow, str):
+        raw = [(glow, None)]
+    elif isinstance(glow, list) and glow:
+        first = glow[0]
+        if isinstance(first, int):
+            raw = [(cast("list[int]", glow), None)]
+        elif isinstance(first, str):
+            raw = [(cast("str", s), None) for s in glow]
+        elif isinstance(first, list):
+            raw = [(cast("list[int]", sub), None) for sub in glow]
+        elif isinstance(first, tuple):
+            raw = []
+            for entry in glow:
+                if not isinstance(entry, tuple):
+                    msg = f"glow entry must be a tuple, got {type(entry)}"
+                    raise TypeError(msg)
+                raw.append((entry[0], entry[1] if len(entry) > 1 else None))
+        else:
+            msg = f"unexpected glow element type: {type(first)}"
+            raise TypeError(msg)
+    else:
+        cfg.glow_groups = []
+        return
+
+    groups: list[GlowGroup] = []
+    for atoms_spec, color_spec in raw:
+        token = _semantic_selector_token(atoms_spec)
+        if token is not None:
+            indices = _resolve_semantic_selector_indices(atoms_spec, protein_data=protein_data, context="glow")
+        else:
+            indices = sorted(_resolve_glow_indices(atoms_spec, graph))
+        if not indices:
+            continue
+        if color_spec is not None:
+            color = resolve_color(color_spec)
+        elif token == "ligand" and ligand_color is not None:
+            color = resolve_color(ligand_color)
+        else:
+            color = None
+        g = GlowGroup(indices=indices, color=color)
+        # No explicit strength => inherit whatever the config carries, so a
+        # RenderConfig(glow_strength=...) passed as `config=` is still honoured.
+        g.strength = glow_strength if glow_strength is not None else cfg.glow_strength
+        if glow_opacity is not None:
+            g.opacity = glow_opacity
+        if glow_scale is not None:
+            g.scale = glow_scale
+        groups.append(g)
+
+    cfg.glow_groups = groups
+    # Keep the legacy single-group field in step so code reading it still sees
+    # the selection; the renderer prefers `glow_groups` when it is non-empty.
+    cfg.glow_indices = sorted({i for g in groups for i in g.indices})
 
 
 def _resolve_glow_indices(

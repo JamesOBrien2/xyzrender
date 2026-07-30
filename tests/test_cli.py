@@ -220,7 +220,7 @@ def test_cli_ligand_highlight_flag_removed(monkeypatch):
         cli.main()
 
 
-def test_cli_halo_ligand_wires_to_render(monkeypatch):
+def test_cli_glow_ligand_wires_to_render(monkeypatch):
     import sys
 
     from xyzrender import cli
@@ -232,10 +232,10 @@ def test_cli_halo_ligand_wires_to_render(monkeypatch):
 
     monkeypatch.setattr("xyzrender.api.render", _fake_render)
     monkeypatch.setattr("xyzrender.api.load", lambda *args, **kwargs: _dummy_molecule())
-    monkeypatch.setattr(sys, "argv", ["xyzrender", str(STRUCTURES / "water.pdb"), "--halo", "ligand"])
+    monkeypatch.setattr(sys, "argv", ["xyzrender", str(STRUCTURES / "water.pdb"), "--glow", "ligand"])
 
     cli.main()
-    assert captured["halo"] == [("ligand",)]
+    assert captured["glow"] == [("ligand",)]
 
 
 def test_cli_nci_ligand_implies_nci_detect_on_load(monkeypatch):
@@ -303,7 +303,7 @@ def test_cli_nci_ligand_protein_only_flag_removed(monkeypatch):
         cli.main()
 
 
-def test_cli_halo_ligand_wires_to_render_gif(monkeypatch, tmp_path):
+def test_cli_glow_ligand_wires_to_render_gif(monkeypatch, tmp_path):
     import sys
 
     from xyzrender import cli
@@ -322,7 +322,7 @@ def test_cli_halo_ligand_wires_to_render_gif(monkeypatch, tmp_path):
         [
             "xyzrender",
             str(STRUCTURES / "water.pdb"),
-            "--halo",
+            "--glow",
             "ligand",
             "--gif-rot",
             "--gif-output",
@@ -331,7 +331,7 @@ def test_cli_halo_ligand_wires_to_render_gif(monkeypatch, tmp_path):
     )
 
     cli.main()
-    assert captured_gif["halo"] == [("ligand",)]
+    assert captured_gif["glow"] == [("ligand",)]
 
 
 # ---------------------------------------------------------------------------

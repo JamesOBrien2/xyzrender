@@ -148,7 +148,7 @@ xyzrender "$DIR/caffeine.xyz" --hl "1-3,7" -o "$IMG/caffeine_hl.svg" --gif-rot -
 xyzrender "$DIR/caffeine.xyz" --hl "1-3,7" lightseagreen -o "$IMG/caffeine_hl_custom.svg"
 xyzrender "$DIR/caffeine.xyz" --hl "1-3,5,10,11,15,16,19,21" darkorchid --hl "4,6-9,12-14,17,18,20,22-24" teal --hy -o "$IMG/caffeine_multi_hl.svg"
 xyzrender "$DIR/caffeine.xyz" --hl "1-3,5,10,11,15,16,19,21" --mol-color mediumseagreen --hy --idx n -o "$IMG/caffeine_mol_color_hl_idx.svg"
-xyzrender "$DIR/caffeine.xyz" --hl "1-3,7" --halo "1-3,7" orchid -o "$IMG/caffeine_halo.svg"
+xyzrender "$DIR/caffeine.xyz" --hl "1-3,7" --glow "1-3,7" orchid --glow-scale 2 -o "$IMG/caffeine_glow.svg"
 
 echo "=== Optional scaling ==="
 xyzrender "$DIR/CoCl6.xyz" --radius-scale "Co" 2 -o "$IMG/CoCl6_scaled_Co18.svg"
