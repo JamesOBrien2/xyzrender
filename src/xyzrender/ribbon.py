@@ -953,6 +953,12 @@ def sidechain_anchors(
     actually swept.  The direction used is the residue's own CA->CB vector
     where a CB exists, falling back to the frame's thickness axis (a sidechain
     leaves the tape face, not its edge).
+
+    The half-extents come from :func:`_sample_widths` evaluated at the residues'
+    own parameter values, i.e. the same call the sweep makes.  Reading the raw
+    per-SS table instead would miss the cross-run smoothing and the strand
+    arrowhead flange/taper, and sidechains at strand C-termini would float off
+    the tip.
     """
     style = ribbon_style_profile(cfg.protein_style)
     dims = _section_dims(cfg.ribbon_width / 2.0, cfg.loop_width / 2.0, style)
@@ -968,10 +974,11 @@ def sidechain_anchors(
             tangents = _central_tangents(ca_pos)
             normals = _frame_normals(ca_pos, o_pos, tangents, ss)
             binormals = _unit_rows(np.cross(tangents, normals))
+            hw_r, ht_r, _ = _sample_widths(ss, np.arange(len(ss), dtype=float), dims)
 
             res_with_ca = [(r, r.ca_index) for r in seg if r.ca_index is not None]
             for k, (res, ca_index) in enumerate(res_with_ca):
-                hw, ht = dims[res.ss_type if res.ss_type in ("H", "E") else "C"]
+                hw, ht = float(hw_r[k]), float(ht_r[k])
 
                 # Direction out of the tape: CA->CB when available.
                 d = None
