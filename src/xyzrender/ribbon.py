@@ -31,15 +31,18 @@ Secondary structure labels: ``"H"`` helix, ``"E"`` strand, ``"C"`` coil.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
 
-from xyzrender.colors import _FOG_NEAR, Color, blend_fog
+from xyzrender.colors import _FOG_NEAR, Color, blend_fog, palette_color
 
 if TYPE_CHECKING:
     from xyzrender.types import ProteinData, ProteinSemantics, RenderConfig, ResidueData
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -648,7 +651,7 @@ def _segment_items(
     ca_pos: np.ndarray,
     o_pos: list[np.ndarray | None],
     ss: list[str],
-    shader: _Shader,
+    shaders: list[_Shader],
     style: RibbonStyleProfile,
     outline: str | None,
     half_ribbon: float,
@@ -725,6 +728,9 @@ def _segment_items(
     pz = verts[:, :, 2]
     sw = style.outline_px
     stroke = f' stroke="{outline}" stroke-width="{sw:.2f}"' if (outline and sw > 0) else ' stroke="none"'
+    # Each spline sample belongs to the nearest residue, so per-residue colour
+    # modes (rainbow, by-SS, by-B-factor) shade the right stretch of tape.
+    sample_res = np.clip(np.rint(res_t).astype(int), 0, len(shaders) - 1)
 
     nxt = np.roll(np.arange(_PROFILE_N), -1)
     for i in range(m - 1):
@@ -745,7 +751,7 @@ def _segment_items(
             lam = 0.5 if fl <= _EPS else abs(float(np.dot(fn / fl, _LIGHT_DIR)))
             lam = _SHADE_FLOOR + (1.0 - _SHADE_FLOOR) * lam
             fog = _fog_at(zq, fog_enabled, fog_strength, z_front, z_range)
-            fill = shader.shade(lam, fog)
+            fill = shaders[sample_res[i]].shade(lam, fog)
             pts = (
                 f"{px[i, j]:.1f},{py[i, j]:.1f} {px[i, k]:.1f},{py[i, k]:.1f} "
                 f"{px[i + 1, k]:.1f},{py[i + 1, k]:.1f} {px[i + 1, j]:.1f},{py[i + 1, j]:.1f}"
@@ -759,7 +765,7 @@ def _segment_items(
         pts = " ".join(f"{px[i, j]:.1f},{py[i, j]:.1f}" for j in range(_PROFILE_N))
         zc = float(pz[i].mean())
         fog = _fog_at(zc, fog_enabled, fog_strength, z_front, z_range)
-        items.append((zc, [f'  <polygon points="{pts}" fill="{shader.shade(0.5, fog)}"{stroke}/>']))
+        items.append((zc, [f'  <polygon points="{pts}" fill="{shaders[sample_res[i]].shade(0.5, fog)}"{stroke}/>']))
 
     return items
 
@@ -815,6 +821,62 @@ def _split_backbone_segments(
             segments[-1].append(cur)
         prev = cur
     return [seg for seg in segments if len(seg) >= 2]
+
+
+# ---------------------------------------------------------------------------
+# Colour modes
+# ---------------------------------------------------------------------------
+
+COLOR_BY_MODES: tuple[str, ...] = ("chain", "rainbow", "ss", "bfactor")
+
+# Secondary-structure palette.  Distinct hues rather than a ramp: H/E/C is a
+# categorical distinction, not an ordered one.
+_SS_COLORS: dict[str, str] = {"H": "#d95f5f", "E": "#e0c060", "C": "#7f9fbf"}
+
+_RAINBOW_PALETTE = "spectral"
+_BFACTOR_PALETTE = "viridis"
+
+
+def normalize_color_by(mode: str | None) -> str:
+    """Validate a ``--color-by`` mode name."""
+    key = (mode or "chain").strip().lower()
+    if key not in COLOR_BY_MODES:
+        opts = ", ".join(COLOR_BY_MODES)
+        raise ValueError(f"unknown color-by mode {mode!r} (expected one of: {opts})")
+    return key
+
+
+def _residue_colors(
+    residues: list["ResidueData"],
+    mode: str,
+    chain_color: str,
+    *,
+    b_range: tuple[float, float] | None,
+) -> list[str]:
+    """One base colour per residue for the given mode."""
+    n = len(residues)
+    if mode == "ss":
+        return [_SS_COLORS.get(r.ss_type, _SS_COLORS["C"]) for r in residues]
+    if mode == "rainbow":
+        # N-terminus to C-terminus across the chain.
+        if n == 1:
+            return [palette_color(_RAINBOW_PALETTE, 0.5).hex]
+        return [palette_color(_RAINBOW_PALETTE, i / (n - 1)).hex for i in range(n)]
+    if mode == "bfactor":
+        if b_range is None:
+            return [chain_color] * n
+        lo, hi = b_range
+        span = max(hi - lo, _EPS)
+        return [palette_color(_BFACTOR_PALETTE, (r.b_factor - lo) / span).hex for r in residues]
+    return [chain_color] * n
+
+
+def bfactor_range(protein_data: "ProteinData | ProteinSemantics", exclude: set[str]) -> tuple[float, float] | None:
+    """Min/max residue B-factor across displayed chains, or ``None`` if flat."""
+    vals = [r.b_factor for cid, chain in protein_data.chains.items() if cid not in exclude for r in chain.residues]
+    if not vals or max(vals) - min(vals) <= _EPS:
+        return None
+    return min(vals), max(vals)
 
 
 # ---------------------------------------------------------------------------
@@ -970,25 +1032,40 @@ def ribbon_svg_items(
     half_ribbon = cfg.ribbon_width / 2.0
     loop_half = cfg.loop_width / 2.0
     style = ribbon_style_profile(cfg.protein_style)
+    mode = normalize_color_by(cfg.color_by)
+    b_range = bfactor_range(protein_data, set(cfg.exclude_chains)) if mode == "bfactor" else None
+    if mode == "bfactor" and b_range is None:
+        logger.warning("color_by='bfactor' requested but every residue has the same B-factor; using chain colours")
 
     z_front = float(pos[:, 2].max()) if len(pos) else 0.0
     z_range = max(float(pos[:, 2].max() - pos[:, 2].min()), 1e-6) if len(pos) else 1.0
 
+    # One shader per distinct colour, shared across residues that repeat it.
+    shader_cache: dict[str, _Shader] = {}
+
+    def _shader_for(hex_color: str) -> _Shader:
+        got = shader_cache.get(hex_color)
+        if got is None:
+            got = _Shader(hex_color, cfg, style.shade_gain, fog_enabled=fog_enabled, fog_rgb=fog_rgb)
+            shader_cache[hex_color] = got
+        return got
+
     items: list[tuple[float, list[str]]] = []
     for cid in chain_ids:
         color = chain_colors[cid]
-        shader = _Shader(color, cfg, style.shade_gain, fog_enabled=fog_enabled, fog_rgb=fog_rgb)
         outline = Color.from_str(color).blend(_BLACK, style.outline_dark).hex if style.outline_px > 0 else None
         for backbone_seg in _split_backbone_segments(protein_data.chains[cid].residues, pos):
             ca_pos, o_pos, ss = _extract_ca_o_ss(backbone_seg, pos)
             if len(ca_pos) < 2:
                 continue
+            seg_res = [r for r in backbone_seg if r.ca_index is not None]
+            seg_shaders = [_shader_for(c) for c in _residue_colors(seg_res, mode, color, b_range=b_range)]
             items.extend(
                 _segment_items(
                     ca_pos,
                     o_pos,
                     ss,
-                    shader,
+                    seg_shaders,
                     style,
                     outline,
                     half_ribbon,
@@ -1053,7 +1130,7 @@ def trace_svg_items(
                 ca_pos,
                 [None] * len(ca_pos),
                 ["C"] * len(ca_pos),
-                shader,
+                [shader] * len(ca_pos),
                 style,
                 outline,
                 loop_half,

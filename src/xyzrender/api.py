@@ -45,7 +45,12 @@ if TYPE_CHECKING:
 
 from xyzrender.colors import resolve_color
 from xyzrender.config import SurfaceOverrides
-from xyzrender.ribbon import default_ribbon_style, normalize_ribbon_style, ribbon_style_names
+from xyzrender.ribbon import (
+    default_ribbon_style,
+    normalize_color_by,
+    normalize_ribbon_style,
+    ribbon_style_names,
+)
 from xyzrender.types import GIFResult, OverlayConfig, ProteinConfidence, RenderConfig, SVGResult
 from xyzrender.utils import parse_atom_indices
 
@@ -980,6 +985,7 @@ def render(
     ribbon_width: float | None = None,
     loop_width: float | None = None,
     sidechain: bool | str = False,
+    color_by: str | None = None,
     # --- Ligands ---
     ligand_highlight: bool = False,
     ligand_color: str | None = None,
@@ -1332,6 +1338,8 @@ def render(
         cfg.ribbon_width = ribbon_width
     if loop_width is not None:
         cfg.loop_width = loop_width
+    if color_by is not None:
+        cfg.color_by = normalize_color_by(color_by)
     if sidechain:
         cfg.show_sidechain = True
         # A string restricts to those residues; bare True means all of them.
@@ -1705,6 +1713,7 @@ def render_gif(
     ribbon_width: float | None = None,
     loop_width: float | None = None,
     sidechain: bool | str = False,
+    color_by: str | None = None,
     # --- Ligands ---
     ligand_highlight: bool = False,
     ligand_color: str | None = None,
@@ -1931,6 +1940,8 @@ def render_gif(
         cfg.ribbon_width = ribbon_width
     if loop_width is not None:
         cfg.loop_width = loop_width
+    if color_by is not None:
+        cfg.color_by = normalize_color_by(color_by)
     if sidechain:
         cfg.show_sidechain = True
         # A string restricts to those residues; bare True means all of them.

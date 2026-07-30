@@ -795,6 +795,16 @@ def main() -> None:
         help="Loop-width cap in Å for coil segments (default 0.8).",
     )
     prot_g.add_argument(
+        "--color-by",
+        dest="color_by",
+        default=None,
+        choices=("chain", "rainbow", "ss", "bfactor"),
+        help=(
+            "Cartoon colouring: chain (default), rainbow (N->C per chain), "
+            "ss (helix/sheet/coil), bfactor (temperature factor / AlphaFold pLDDT)."
+        ),
+    )
+    prot_g.add_argument(
         "--sidechain",
         nargs="?",
         const=True,
@@ -1580,6 +1590,7 @@ def main() -> None:
             ribbon_width=args.ribbon_width,
             loop_width=args.loop_width,
             sidechain=args.sidechain,
+            color_by=args.color_by,
             ligand_highlight=args.ligand_highlight,
             ligand_color=args.ligand_color,
             nci_ligand_protein_only=args.nci_ligand,
@@ -1693,6 +1704,7 @@ def main() -> None:
                 ribbon_width=args.ribbon_width,
                 loop_width=args.loop_width,
                 sidechain=args.sidechain,
+                color_by=args.color_by,
                 ligand_highlight=args.ligand_highlight,
                 ligand_color=args.ligand_color,
             )

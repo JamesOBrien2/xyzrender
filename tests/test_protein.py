@@ -1161,3 +1161,108 @@ def test_sidechain_selector_restricts_what_is_drawn(sidechain_pdb):
     everything = str(render(mol, protein=True, sidechain=True, orient=False))
     restricted = str(render(mol, protein=True, sidechain="1", orient=False))
     assert restricted.count("<circle") < everything.count("<circle")
+
+
+# ---------------------------------------------------------------------------
+# Colour modes
+# ---------------------------------------------------------------------------
+
+
+def _fills(svg: str) -> set[str]:
+    import re
+
+    return set(re.findall(r'fill="(#[0-9a-fA-F]{6})"', svg))
+
+
+def test_color_by_modes_are_validated():
+    from xyzrender.ribbon import COLOR_BY_MODES, normalize_color_by
+
+    assert normalize_color_by(None) == "chain"
+    for mode in COLOR_BY_MODES:
+        assert normalize_color_by(mode.upper()) == mode
+    with pytest.raises(ValueError, match="unknown color-by mode"):
+        normalize_color_by("bogus")
+
+
+def _residues(pdb):
+    pd = _require_protein_data(load(pdb).protein_data)
+    return [r for c in pd.chains.values() for r in c.residues]
+
+
+def test_color_by_ss_uses_distinct_colors_per_structure(helix_pdb, sheet_pdb):
+    """Helix, sheet and coil each get their own colour."""
+    from xyzrender.ribbon import _residue_colors
+
+    h = _residue_colors(_residues(helix_pdb), "ss", "#888888", b_range=None)
+    e = _residue_colors(_residues(sheet_pdb), "ss", "#888888", b_range=None)
+    assert len(set(h)) == 1
+    assert len(set(e)) == 1
+    assert set(h).isdisjoint(e), "helix and sheet share a colour under color_by='ss'"
+
+
+def test_color_by_rainbow_ramps_n_to_c(sheet_pdb):
+    """Rainbow walks a spectral ramp from the N terminus to the C terminus."""
+    from xyzrender.ribbon import _residue_colors
+
+    residues = _residues(sheet_pdb)
+    colors = _residue_colors(residues, "rainbow", "#888888", b_range=None)
+    assert len(colors) == len(residues)
+    assert len(set(colors)) == len(residues), "rainbow repeated a colour"
+    assert colors[0] != colors[-1]
+
+
+def test_color_by_reaches_the_rendered_output(sheet_pdb):
+    """Switching mode actually changes the emitted SVG."""
+    mol = load(sheet_pdb)
+    by_chain = str(render(mol, protein=True, color_by="chain", orient=False))
+    by_ss = str(render(mol, protein=True, color_by="ss", orient=False))
+    assert _fills(by_chain) != _fills(by_ss)
+
+
+def test_color_by_bfactor_tracks_the_temperature_factor(tmp_path):
+    """Residues with different B-factors get different colours."""
+    lines = []
+    serial = 1
+    for k in range(6):
+        for name, off, elem in (("N", 0.0, "N"), ("CA", 1.5, "C"), ("C", 2.5, "C"), ("O", 3.0, "O")):
+            lines.append(
+                _atom_line(serial, name, "ALA", "A", k + 1, (k * 3.8 + off, 0.0, 0.0), bfac=10.0 * k, elem=elem)
+            )
+            serial += 1
+    p = tmp_path / "bfac_chain.pdb"
+    p.write_text("\n".join(lines) + "\n")
+
+    mol = load(p)
+    flat = _fills(str(render(mol, protein=True, color_by="chain", orient=False)))
+    graded = _fills(str(render(mol, protein=True, color_by="bfactor", orient=False)))
+    assert len(graded) > len(flat)
+
+
+def test_color_by_bfactor_falls_back_when_uniform(helix_pdb, caplog):
+    """A structure with no B-factor variation warns and keeps chain colours."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        svg = str(render(load(helix_pdb), protein=True, color_by="bfactor", orient=False))
+    assert svg.count("<polygon") > 0
+    assert any("same B-factor" in r.message for r in caplog.records)
+
+
+def test_bfactor_range_ignores_excluded_chains(two_chain_pdb):
+    from xyzrender.ribbon import bfactor_range
+
+    pd = _require_protein_data(load(two_chain_pdb).protein_data)
+    # All fixture B-factors are 0.00, so the range is degenerate -> None.
+    assert bfactor_range(pd, set()) is None
+
+
+def test_chain_palette_wrap_is_distinguishable():
+    """Chain 9 must not be identical to chain 1 when the palette wraps."""
+    from xyzrender.ribbon import assign_chain_colors
+    from xyzrender.types import RenderConfig
+
+    cfg = RenderConfig(protein=True)
+    n = len(cfg.protein_palette)
+    ids = [f"C{i}" for i in range(n * 2)]
+    colors = assign_chain_colors(cfg, ids)
+    assert colors[ids[0]] != colors[ids[n]], "palette wrapped to an identical colour"

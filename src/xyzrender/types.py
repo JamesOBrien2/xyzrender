@@ -546,6 +546,9 @@ class RenderConfig:
     # what makes a cartoon helix read as a coiled solid rather than a thin strap.
     ribbon_width: float = 4.5
     loop_width: float = 0.9  # Å — full diameter of the round coil tube
+    # Cartoon colouring: "chain" (default), "rainbow" (N->C per chain),
+    # "ss" (helix/sheet/coil), "bfactor" (temperature factor / AlphaFold pLDDT).
+    color_by: str = "chain"
     show_sidechain: bool = False  # show amino-acid side chains as sticks
     # Restrict sidechains to these residues, as "45,102-108" (residue numbers,
     # optionally "A:45" to name a chain).  None means every residue, which is
