@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from textwrap import dedent
 
-import numpy as np
 import pytest
 
 from xyzrender import load, render
@@ -158,101 +157,11 @@ def test_graph_only_trace_fallback(tmp_path):
     assert svg.count("<polygon") > 5
 
 
-def test_cif_annotations_prevent_graph_only_fallback(tmp_path, monkeypatch):
-    pytest.importorskip("xyzgraph.protein", reason="xyzgraph protein semantics module required")
-    ase = pytest.importorskip("ase", reason="ase required")
-    from ase import Atoms
+def test_mmcif_is_rejected_with_a_clear_message(tmp_path):
+    """ase reads small-molecule CIF only; mmCIF must not surface as StopIteration."""
+    from xyzrender.parsers import parse_cif
 
     p = tmp_path / "prot.cif"
-    p.write_text("data_fake\n")
-
-    structure = Atoms(
-        symbols=["N", "C", "C", "O", "N", "C", "C", "O"],
-        positions=np.zeros((8, 3), dtype=float),
-        cell=np.eye(3),
-        pbc=True,
-    )
-    structure.set_array("atomtypes", np.array(["N", "CA", "C", "O", "N", "CA", "C", "O"], dtype=object))
-    structure.set_array(
-        "residuenames",
-        np.array(["ALA", "ALA", "ALA", "ALA", "GLY", "GLY", "GLY", "GLY"], dtype=object),
-    )
-    structure.set_array("residuenumbers", np.array([1, 1, 1, 1, 2, 2, 2, 2], dtype=int))
-    structure.set_array("chainids", np.array(["A", "A", "A", "A", "A", "A", "A", "A"], dtype=object))
-
-    def fake_read(path, format=None, **kwargs):
-        return structure
-
-    monkeypatch.setattr(ase.io, "read", fake_read)
-
-    mol = load(p)
-    sem = mol.protein_semantics
-    assert sem is not None
-    assert sem.confidence_tier == ProteinConfidence.FULL_RIBBON
-    assert any("annotations:.cif annotations parsed" in reason for reason in sem.confidence_reasons)
-    assert not any("graph-only heuristic" in reason for reason in sem.confidence_reasons)
-
-
-def test_cif_struct_conf_and_sheet_range_labels(tmp_path, monkeypatch):
-    pytest.importorskip("xyzgraph.protein", reason="xyzgraph protein semantics module required")
-    ase = pytest.importorskip("ase", reason="ase required")
-    from ase import Atoms
-
-    p = tmp_path / "prot_ss.cif"
-    p.write_text("data_fake\n")
-
-    n_res = 6
-    symbols: list[str] = []
-    positions: list[tuple[float, float, float]] = []
-    atomtypes: list[str] = []
-    residuenames: list[str] = []
-    residuenumbers: list[int] = []
-    chainids: list[str] = []
-    groups: list[str] = []
-    serial = 0
-    for r in range(1, n_res + 1):
-        for atom_name, sym, dx in (("N", "N", -1.1), ("CA", "C", 0.0), ("C", "C", 1.1), ("O", "O", 1.8)):
-            symbols.append(sym)
-            positions.append((float(r * 1.5 + dx), 0.0, 0.0))
-            atomtypes.append(atom_name)
-            residuenames.append("ALA")
-            residuenumbers.append(r)
-            chainids.append("A")
-            groups.append("ATOM")
-            serial += 1
-
-    structure = Atoms(symbols=symbols, positions=np.asarray(positions, dtype=float), cell=np.eye(3), pbc=True)
-    structure.set_array("atomtypes", np.asarray(atomtypes, dtype=object))
-    structure.set_array("residuenames", np.asarray(residuenames, dtype=object))
-    structure.set_array("residuenumbers", np.asarray(residuenumbers, dtype=int))
-    structure.set_array("chainids", np.asarray(chainids, dtype=object))
-    structure.set_array("tags", np.arange(serial, dtype=int))
-    structure.info["_atom_site.group_pdb"] = groups
-    structure.info["_struct_conf.conf_type_id"] = ["HELX_P"]
-    structure.info["_struct_conf.beg_auth_asym_id"] = ["A"]
-    structure.info["_struct_conf.end_auth_asym_id"] = ["A"]
-    structure.info["_struct_conf.beg_auth_seq_id"] = [1]
-    structure.info["_struct_conf.end_auth_seq_id"] = [3]
-    structure.info["_struct_sheet_range.beg_auth_asym_id"] = ["A"]
-    structure.info["_struct_sheet_range.end_auth_asym_id"] = ["A"]
-    structure.info["_struct_sheet_range.beg_auth_seq_id"] = [4]
-    structure.info["_struct_sheet_range.end_auth_seq_id"] = [6]
-
-    def fake_read(path, format=None, **kwargs):
-        assert kwargs.get("store_tags") is True
-        return structure
-
-    monkeypatch.setattr(ase.io, "read", fake_read)
-
-    mol = load(p)
-    sem = mol.protein_semantics
-    assert sem is not None
-    assert sem.confidence_tier == ProteinConfidence.FULL_RIBBON
-    chain = sem.chains["A"]
-    labels = {res.res_seq: res.ss_type for res in chain.residues}
-    assert labels[1] == "H"
-    assert labels[2] == "H"
-    assert labels[3] == "H"
-    assert labels[4] == "E"
-    assert labels[5] == "E"
-    assert labels[6] == "E"
+    p.write_text("data_x\nloop_\n_atom_site.group_PDB\n_atom_site.Cartn_x\nATOM 1.0\n")
+    with pytest.raises(ValueError, match="mmCIF is not supported"):
+        parse_cif(p)

@@ -971,11 +971,27 @@ def parse_smiles(smiles: str, kekule: bool = False) -> MolData:
 # ---------------------------------------------------------------------------
 
 
+def _reject_mmcif(path: str | Path) -> None:
+    """Raise on mmCIF, which ase's CIF reader cannot parse.
+
+    ase reads small-molecule CIF, whose tags are underscore-joined
+    (``_atom_site_Cartn_x``); mmCIF uses a dotted form (``_atom_site.Cartn_x``)
+    that every ase block rejects, leaving the caller a bare StopIteration.
+    """
+    with open(path, encoding="utf-8", errors="ignore") as fh:
+        for ln in fh:
+            token = ln.strip()
+            if token.startswith("_atom_site."):
+                msg = f"{path}: mmCIF is not supported yet (small-molecule CIF only)"
+                raise ValueError(msg)
+            if token.startswith("_atom_site_"):
+                return
+
+
 def parse_cif(path: str | Path) -> MolData:
-    """Parse a CIF file via ase.  Requires ``pip install 'xyzrender[cif]'``.
+    """Parse a small-molecule CIF via ase.  Requires ``pip install 'xyzrender[cif]'``.
 
     bonds is None (ase does not store bonds); pbc_cell holds the lattice matrix.
-    When available, per-atom annotations are extracted for protein semantics.
     """
     try:
         import ase
@@ -984,6 +1000,7 @@ def parse_cif(path: str | Path) -> MolData:
         msg = "CIF parsing requires ase: pip install 'xyzrender[cif]'"
         raise ImportError(msg) from None
 
+    _reject_mmcif(path)
     structure = ase.io.read(str(path), format="cif", store_tags=True)
 
     assert isinstance(structure, ase.Atoms), f"Expected Atoms from CIF, got {type(structure)}"
@@ -991,174 +1008,9 @@ def parse_cif(path: str | Path) -> MolData:
     symbols: list[str] = list(structure.get_chemical_symbols())
     positions = structure.get_positions()
     cell = np.array(structure.get_cell())
-    n_atoms = len(symbols)
 
     atoms: list[tuple[str, tuple[float, float, float]]] = [
         (sym, (float(x), float(y), float(z))) for sym, (x, y, z) in zip(symbols, positions, strict=True)
     ]
-    arrays = structure.arrays
-    info = {str(k).lower(): v for k, v in structure.info.items()}
 
-    def _to_list(values: object) -> list[object] | None:
-        if values is None:
-            return None
-        if isinstance(values, np.ndarray):
-            return list(np.asarray(values, dtype=object).flat)
-        if isinstance(values, (list, tuple)):
-            return list(values)
-        return [values]
-
-    tags_raw = arrays.get("tags")
-    tags: list[int] | None = None
-    if tags_raw is not None and len(tags_raw) == n_atoms:
-        try:
-            tags = [int(x) for x in tags_raw]
-        except Exception:  # pragma: no cover - defensive only
-            tags = None
-
-    def _atom_column_from_info(*keys: str) -> list[object] | None:
-        for key in keys:
-            col = _to_list(info.get(key.lower()))
-            if not col:
-                continue
-            if tags is not None and max(tags, default=-1) < len(col):
-                return [col[idx] for idx in tags]
-            if len(col) == n_atoms:
-                return col
-        return None
-
-    def _atom_column(*array_keys: str, info_keys: tuple[str, ...] = ()) -> list[object] | None:
-        for key in array_keys:
-            col = arrays.get(key)
-            if col is None:
-                continue
-            col_list = _to_list(col)
-            if col_list is not None and len(col_list) == n_atoms:
-                return col_list
-        if info_keys:
-            return _atom_column_from_info(*info_keys)
-        return None
-
-    def _loop_column(*keys: str) -> list[object] | None:
-        for key in keys:
-            col = _to_list(info.get(key.lower()))
-            if col:
-                return col
-        return None
-
-    def _clean_str(value: object, default: str) -> str:
-        s = str(value).strip()
-        if s in {"", ".", "?"}:
-            return default
-        return s
-
-    def _to_int(value: object, default: int) -> int:
-        if isinstance(value, (int, np.integer)):
-            return int(value)
-        if isinstance(value, (float, np.floating)):
-            return int(value)
-        if isinstance(value, str):
-            try:
-                return int(value)
-            except ValueError:
-                return default
-        return default
-
-    atom_names = (
-        _atom_column(
-            "atomtypes",
-            info_keys=("_atom_site.auth_atom_id", "_atom_site.label_atom_id"),
-        )
-        or [""] * n_atoms
-    )
-    res_names = (
-        _atom_column(
-            "residuenames",
-            info_keys=("_atom_site.auth_comp_id", "_atom_site.label_comp_id"),
-        )
-        or ["UNK"] * n_atoms
-    )
-    res_seqs = _atom_column(
-        "residuenumbers",
-        info_keys=("_atom_site.auth_seq_id", "_atom_site.label_seq_id"),
-    ) or list(range(1, n_atoms + 1))
-    chain_ids = (
-        _atom_column(
-            "chainids",
-            info_keys=("_atom_site.auth_asym_id", "_atom_site.label_asym_id"),
-        )
-        or ["A"] * n_atoms
-    )
-    record_types = (
-        _atom_column(
-            info_keys=("_atom_site.group_pdb",),
-        )
-        or ["ATOM"] * n_atoms
-    )
-
-    # Build residue-level SS map from mmCIF/CIF loops.
-    # Precedence is deterministic: H overrides E for overlapping ranges.
-    residue_ss: dict[tuple[str, int], str] = {}
-
-    conf_type = _loop_column("_struct_conf.conf_type_id")
-    conf_beg_chain = _loop_column("_struct_conf.beg_auth_asym_id", "_struct_conf.beg_label_asym_id")
-    conf_end_chain = _loop_column("_struct_conf.end_auth_asym_id", "_struct_conf.end_label_asym_id")
-    conf_beg_seq = _loop_column("_struct_conf.beg_auth_seq_id", "_struct_conf.beg_label_seq_id")
-    conf_end_seq = _loop_column("_struct_conf.end_auth_seq_id", "_struct_conf.end_label_seq_id")
-    if conf_type and conf_beg_chain and conf_end_chain and conf_beg_seq and conf_end_seq:
-        n_rows = min(len(conf_type), len(conf_beg_chain), len(conf_end_chain), len(conf_beg_seq), len(conf_end_seq))
-        for i in range(n_rows):
-            ctype = _clean_str(conf_type[i], "").upper()
-            if not ctype.startswith("HELX"):
-                continue
-            chain = _clean_str(conf_beg_chain[i], _clean_str(conf_end_chain[i], "A"))
-            start = _to_int(conf_beg_seq[i], 0)
-            end = _to_int(conf_end_seq[i], 0)
-            if not chain or start == 0 or end == 0:
-                continue
-            lo, hi = (start, end) if start <= end else (end, start)
-            for seq in range(lo, hi + 1):
-                residue_ss[(chain, seq)] = "H"
-
-    sheet_beg_chain = _loop_column("_struct_sheet_range.beg_auth_asym_id", "_struct_sheet_range.beg_label_asym_id")
-    sheet_end_chain = _loop_column("_struct_sheet_range.end_auth_asym_id", "_struct_sheet_range.end_label_asym_id")
-    sheet_beg_seq = _loop_column("_struct_sheet_range.beg_auth_seq_id", "_struct_sheet_range.beg_label_seq_id")
-    sheet_end_seq = _loop_column("_struct_sheet_range.end_auth_seq_id", "_struct_sheet_range.end_label_seq_id")
-    if sheet_beg_chain and sheet_end_chain and sheet_beg_seq and sheet_end_seq:
-        n_rows = min(len(sheet_beg_chain), len(sheet_end_chain), len(sheet_beg_seq), len(sheet_end_seq))
-        for i in range(n_rows):
-            chain = _clean_str(sheet_beg_chain[i], _clean_str(sheet_end_chain[i], "A"))
-            start = _to_int(sheet_beg_seq[i], 0)
-            end = _to_int(sheet_end_seq[i], 0)
-            if not chain or start == 0 or end == 0:
-                continue
-            lo, hi = (start, end) if start <= end else (end, start)
-            for seq in range(lo, hi + 1):
-                key = (chain, seq)
-                if residue_ss.get(key) != "H":
-                    residue_ss[key] = "E"
-
-    atom_annotations: list[dict[str, object]] = []
-    for i in range(n_atoms):
-        chain_id = _clean_str(chain_ids[i], "A")
-        res_seq = _to_int(res_seqs[i], i + 1)
-        ss_type = residue_ss.get((chain_id, res_seq), "C")
-        rec = _clean_str(record_types[i], "ATOM").upper()
-        atom_annotations.append(
-            {
-                "record_type": "HETATM" if rec == "HETATM" else "ATOM",
-                "atom_name": _clean_str(atom_names[i], ""),
-                "res_name": _clean_str(res_names[i], "UNK").upper(),
-                "res_seq": res_seq,
-                "chain_id": chain_id,
-                "ss_type": ss_type,
-            }
-        )
-
-    return MolData(
-        atoms=atoms,
-        bonds=None,
-        pbc_cell=cell,
-        name=str(path),
-        atom_annotations=atom_annotations or None,
-    )
+    return MolData(atoms=atoms, bonds=None, pbc_cell=cell, name=str(path))
