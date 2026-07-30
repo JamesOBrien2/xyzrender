@@ -233,14 +233,29 @@ def _extract_from_xyzgraph(
     protein_requested: bool,
     format_hint: str | None,
 ) -> ProteinSemantics | None:
+    # Deliberately loud.  This is the ONLY real secondary-structure source; the
+    # remaining fallbacks label every residue coil.  Swallowing the import error
+    # here silently degrades every protein render to a coil-only trace with no
+    # helices, sheets or arrowheads — a failure that is invisible in the output
+    # and was the single largest cause of bad renders in draft PR #96.
     try:
         protein_mod = importlib.import_module("xyzgraph.protein")
-    except Exception:
-        return None
+    except ImportError as exc:  # pragma: no cover - depends on installed xyzgraph
+        msg = (
+            "protein rendering requires a build of xyzgraph that provides "
+            "`xyzgraph.protein` (secondary-structure assignment). The installed "
+            "xyzgraph does not. Install/upgrade xyzgraph, then retry."
+        )
+        raise ImportError(msg) from exc
     annotate_protein_semantics = getattr(protein_mod, "annotate_protein_semantics", None)
     protein_semantics_from_dict = getattr(protein_mod, "protein_semantics_from_dict", None)
     if annotate_protein_semantics is None or protein_semantics_from_dict is None:
-        return None
+        msg = (
+            "`xyzgraph.protein` is present but does not export "
+            "annotate_protein_semantics / protein_semantics_from_dict; "
+            "the installed xyzgraph is too old for protein rendering."
+        )
+        raise ImportError(msg)
 
     annotations = _canonical_annotations(moldata=moldata, source_path=source_path, format_hint=format_hint)
     report = annotate_protein_semantics(

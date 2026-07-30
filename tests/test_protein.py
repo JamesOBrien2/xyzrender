@@ -883,3 +883,72 @@ def test_demo_fixture_renders_dotted_nci_in_protein_mode():
     mol = load(STRUCTURES / "protein_ligand_demo.pdb", nci_ligand_protein_only=True)
     svg = str(render(mol, protein=True, nci_ligand_protein_only=True, orient=False))
     assert "stroke-dasharray" in svg
+
+
+# ---------------------------------------------------------------------------
+# Secondary-structure inference accuracy (regression floor)
+# ---------------------------------------------------------------------------
+
+_8UWL = STRUCTURES / "8UWL.pdb"
+
+
+def _records_ss(pdb_text: str) -> dict[tuple[str, int], str]:
+    """Per-residue H/E labels from a PDB's HELIX/SHEET records."""
+    truth: dict[tuple[str, int], str] = {}
+    for ln in pdb_text.splitlines():
+        if ln.startswith("HELIX "):
+            for r in range(int(ln[21:25]), int(ln[33:37]) + 1):
+                truth[(ln[19], r)] = "H"
+        elif ln.startswith("SHEET "):
+            for r in range(int(ln[22:26]), int(ln[33:37]) + 1):
+                truth.setdefault((ln[21], r), "E")
+    return truth
+
+
+def _assigned_ss(path: Path) -> dict[tuple[str, int], str]:
+    from xyzrender.protein_semantics import extract_protein_semantics
+
+    mol = load(path)
+    sem = mol.protein_semantics or extract_protein_semantics(mol.graph, source_path=str(path), protein_requested=True)
+    assert sem is not None
+    return {(cid, res.res_seq): res.ss_type for cid, chain in sem.chains.items() for res in chain.residues}
+
+
+def test_ss_records_take_precedence_over_inference():
+    """With HELIX/SHEET present, every record-labelled residue keeps its record label."""
+    if not _8UWL.exists():
+        pytest.skip("8UWL.pdb fixture not present in this checkout")
+    truth = _records_ss(_8UWL.read_text())
+    got = _assigned_ss(_8UWL)
+    common = set(truth) & set(got)
+    assert len(common) > 500, "expected a substantial record overlap"
+    assert all(truth[k] == got[k] for k in common)
+
+
+def test_ss_geometry_inference_accuracy_floor(tmp_path):
+    """Blind test: strip HELIX/SHEET, infer from CA geometry, score against the records.
+
+    Guards the inference constants in ``xyzgraph.protein``.  Coil recall is the
+    weak axis — the sheet test has no strand-pairing requirement, so extended
+    coil is over-called as beta strand.  See the plan's section 8.
+    """
+    if not _8UWL.exists():
+        pytest.skip("8UWL.pdb fixture not present in this checkout")
+    text = _8UWL.read_text()
+    blind = tmp_path / "8UWL_noss.pdb"
+    blind.write_text("\n".join(ln for ln in text.splitlines() if not ln.startswith(("HELIX ", "SHEET "))))
+
+    truth_he = _records_ss(text)
+    got = _assigned_ss(blind)
+    truth = {k: truth_he.get(k, "C") for k in got}
+
+    overall = sum(truth[k] == got[k] for k in got) / len(got)
+    recall = {}
+    for label in "HEC":
+        n = sum(1 for k in got if truth[k] == label)
+        recall[label] = sum(1 for k in got if truth[k] == label and got[k] == label) / n
+
+    assert overall >= 0.83, f"overall SS agreement regressed to {overall:.1%}"
+    assert recall["H"] >= 0.92, f"helix recall regressed to {recall['H']:.1%}"
+    assert recall["E"] >= 0.94, f"sheet recall regressed to {recall['E']:.1%}"
+    assert recall["C"] >= 0.63, f"coil recall regressed to {recall['C']:.1%}"
