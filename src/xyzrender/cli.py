@@ -796,9 +796,15 @@ def main() -> None:
     )
     prot_g.add_argument(
         "--sidechain",
-        action="store_true",
+        nargs="?",
+        const=True,
         default=False,
-        help="Show amino-acid side chains as sticks (hidden by default in --protein mode).",
+        metavar="RESIDUES",
+        help=(
+            "Show amino-acid side chains as sticks. Optionally restrict to residues, "
+            'e.g. --sidechain "45,102-108" or --sidechain "A:45,B:12"; bare --sidechain '
+            "shows every residue in the displayed chains."
+        ),
     )
     prot_g.add_argument(
         "--exclude-chains",

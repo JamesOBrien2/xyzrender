@@ -552,6 +552,22 @@ def render_svg(
         hidden.update(protein_data.backbone_indices)
         if not cfg.show_sidechain:
             hidden.update(protein_data.sidechain_indices)
+        elif cfg.sidechain_residues is not None:
+            # Restricted to named residues: hide the sidechains of every other.
+            from xyzrender.ribbon import select_sidechain_atoms
+
+            _keep = select_sidechain_atoms(protein_data, cfg.sidechain_residues, exclude_chains=set(cfg.exclude_chains))
+            hidden.update(protein_data.sidechain_indices - _keep)
+
+    # Sidechain attachment: CA is hidden but its bond to CB must still be drawn,
+    # or --sidechain renders sticks floating unattached to the ribbon.  The bond
+    # starts where it leaves the swept ribbon surface rather than at CA, which
+    # is the tape's centreline and therefore buried inside the solid.
+    _sc_anchor: dict[int, np.ndarray] = {}
+    if cfg.protein and protein_data is not None and cfg.show_sidechain:
+        from xyzrender.ribbon import sidechain_anchors
+
+        _sc_anchor = sidechain_anchors(protein_data, cfg, pos)
 
     aromatic_rings = [] if cfg.hide_bonds else _compute_aromatic_rings(graph, bonds)
 
@@ -1508,6 +1524,16 @@ def render_svg(
     # Precompute projected start/end/perpendicular for all bonds in one pass.
     # bond_geom[(ai, aj)] = (x1, y1, x2, y2, px, py) or None if degenerate.
     bond_geom: dict[tuple[int, int], tuple[float, float, float, float, float, float] | None] = {}
+    # Sidechain-attachment bonds start at the ribbon surface, not at CA.  A
+    # substituted position array keeps this out of add_bond entirely; the CA
+    # itself draws no sphere, so moving its bond endpoint affects nothing else.
+    # Its radius is zeroed too, or the bond would be trimmed a second time.
+    _bpos, _brad = pos, radii
+    if _sc_anchor:
+        _bpos, _brad = pos.copy(), radii.copy()
+        for _ca_i, _pt in _sc_anchor.items():
+            _bpos[_ca_i] = _pt
+            _brad[_ca_i] = 0.0
     if bonds and not cfg.hide_bonds and bw > 0:
         # Collect unique undirected bond pairs
         _bpairs = [(i, j) for i, j in bonds if i < j]
@@ -1515,15 +1541,15 @@ def render_svg(
             _bi = np.array([p[0] for p in _bpairs])
             _bj = np.array([p[1] for p in _bpairs])
             # Vectorized 3D geometry
-            _rij = pos[_bj] - pos[_bi]  # (nb, 3)
+            _rij = _bpos[_bj] - _bpos[_bi]  # (nb, 3)
             _dist = np.sqrt((_rij * _rij).sum(axis=1))  # (nb,)
             _valid = _dist > 1e-6
             _d = np.zeros_like(_rij)
             _d[_valid] = _rij[_valid] / _dist[_valid, None]
-            _ri = radii[_bi]
-            _rj = radii[_bj]
-            _start = pos[_bi] + _d * (_ri * 0.9)[:, None]
-            _end = pos[_bj] - _d * (_rj * 0.9)[:, None]
+            _ri = _brad[_bi]
+            _rj = _brad[_bj]
+            _start = _bpos[_bi] + _d * (_ri * 0.9)[:, None]
+            _end = _bpos[_bj] - _d * (_rj * 0.9)[:, None]
             _dot_check = ((_end - _start) * _d).sum(axis=1)
             _valid &= _dot_check > 0
             # Vectorized 2D projection
@@ -1622,13 +1648,18 @@ def render_svg(
         _outgoing_bonds: list[tuple[int, _BondAttrs, float]] = []
         if not cfg.hide_bonds and bw > 0:
             for aj_int in bond_adj.get(ai, ()):
-                if _z_rank[aj_int] <= idx:
+                # A sidechain-attachment bond is always emitted from the
+                # sidechain side: the CA end is hidden and `continue`s before
+                # this loop ever runs, so deferring to z-order would drop the
+                # bond outright whenever the CA sits behind its own CB.
+                _sc_bond = aj_int in _sc_anchor
+                if _z_rank[aj_int] <= idx and not _sc_bond:
                     continue
                 battrs = bonds[(ai, aj_int)]
                 # Hidden endpoints suppress covalent/TS bonds, but NCI overlays
                 # stay visible — in protein ribbon mode the protein-side partner
                 # of a ligand contact is a hidden backbone/sidechain atom.
-                if aj_int in hidden and battrs.style != BondStyle.DOTTED:
+                if aj_int in hidden and battrs.style != BondStyle.DOTTED and not _sc_bond:
                     continue
                 _aj_image = _is_image[aj_int]
                 _aj_struct_op = struct_opacities[aj_int] if not _aj_image else None

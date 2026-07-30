@@ -804,6 +804,10 @@ def _split_backbone_segments(
     prev = ca_res[0]
     for cur in ca_res[1:]:
         seq_step = int(cur.res_seq) - int(prev.res_seq)
+        # An inserted residue (100, 100A, 100B ...) repeats res_seq, giving
+        # seq_step == 0.  That is a continuation of the chain, not a break.
+        if seq_step == 0 and getattr(cur, "i_code", "") != getattr(prev, "i_code", ""):
+            seq_step = _MAX_SEQ_STEP
         gap = float(np.linalg.norm(pos[cur.ca_index] - pos[prev.ca_index]))
         if (seq_step != _MAX_SEQ_STEP) or (gap > _MAX_CA_GAP):
             segments.append([cur])
@@ -811,6 +815,127 @@ def _split_backbone_segments(
             segments[-1].append(cur)
         prev = cur
     return [seg for seg in segments if len(seg) >= 2]
+
+
+# ---------------------------------------------------------------------------
+# Sidechain attachment
+# ---------------------------------------------------------------------------
+
+
+def select_sidechain_atoms(
+    protein_data: "ProteinData | ProteinSemantics",
+    spec: str | None,
+    *,
+    exclude_chains: set[str] | frozenset[str] = frozenset(),
+) -> set[int]:
+    """Resolve a residue selector to the sidechain atom indices it covers.
+
+    *spec* is a comma-separated list of residue numbers and ranges, each
+    optionally chain-qualified: ``"45"``, ``"102-108"``, ``"A:45"``,
+    ``"A:102-108"``.  ``None`` selects every residue in the displayed chains.
+    """
+    wanted: list[tuple[str | None, int, int]] = []
+    if spec is not None:
+        for raw_token in str(spec).split(","):
+            token = raw_token.strip()
+            if not token:
+                continue
+            chain: str | None = None
+            if ":" in token:
+                chain_part, _, rest = token.partition(":")
+                chain = chain_part.strip() or None
+                token = rest.strip()
+            try:
+                if "-" in token.lstrip("-"):
+                    lo_s, _, hi_s = token.partition("-")
+                    lo, hi = int(lo_s), int(hi_s)
+                else:
+                    lo = hi = int(token)
+            except ValueError as exc:
+                msg = f"invalid residue selector {raw_token.strip()!r} (expected e.g. '45', '102-108' or 'A:45')"
+                raise ValueError(msg) from exc
+            wanted.append((chain, min(lo, hi), max(lo, hi)))
+
+    out: set[int] = set()
+    for cid, chain_data in protein_data.chains.items():
+        if cid in exclude_chains:
+            continue
+        for res in chain_data.residues:
+            if wanted and not any((c is None or c == cid) and lo <= res.res_seq <= hi for c, lo, hi in wanted):
+                continue
+            out.update(res.atom_indices)
+    return out
+
+
+# The swept cross-section is a superellipse, which is boxier than the ellipse
+# used to solve for the exit point below; inflate slightly so the sidechain
+# starts just clear of the surface rather than just inside it.
+_SECTION_INFLATE = 1.06
+
+
+def sidechain_anchors(
+    protein_data: "ProteinData | ProteinSemantics",
+    cfg: "RenderConfig",
+    pos: np.ndarray,
+) -> dict[int, np.ndarray]:
+    """Map ``CA atom index -> point where the ribbon surface is exited``.
+
+    With the cartoon a solid tape rather than a flat strip, a sidechain bond
+    drawn from CA starts *inside* the ribbon: CA is the centreline, and the
+    tape is ~2.25 A half-width.  Anchoring the bond where it leaves the swept
+    surface instead makes the sidechain read as growing out of the ribbon.
+
+    The exit point is solved against an ellipse with the local half-width and
+    half-thickness, which is closed-form and a close fit to the superellipse
+    actually swept.  The direction used is the residue's own CA->CB vector
+    where a CB exists, falling back to the frame's thickness axis (a sidechain
+    leaves the tape face, not its edge).
+    """
+    style = ribbon_style_profile(cfg.protein_style)
+    half_ribbon = cfg.ribbon_width / 2.0
+    loop_half = cfg.loop_width / 2.0
+    ws, ts_ = style.width_scale, style.thickness_scale
+
+    anchors: dict[int, np.ndarray] = {}
+    for cid, chain in protein_data.chains.items():
+        if cid in cfg.exclude_chains:
+            continue
+        for seg in _split_backbone_segments(chain.residues, pos):
+            ca_pos, o_pos, ss = _extract_ca_o_ss(seg, pos)
+            if len(ca_pos) < 2:
+                continue
+            tangents = _central_tangents(ca_pos)
+            normals = _frame_normals(ca_pos, o_pos, tangents, ss)
+            binormals = _unit_rows(np.cross(tangents, normals))
+
+            res_with_ca = [(r, r.ca_index) for r in seg if r.ca_index is not None]
+            for k, (res, ca_index) in enumerate(res_with_ca):
+                if res.ss_type == "H":
+                    hw, ht = half_ribbon * ws, half_ribbon * 0.13 * ts_
+                elif res.ss_type == "E":
+                    hw, ht = half_ribbon * 0.92 * ws, half_ribbon * 0.12 * ts_
+                else:
+                    hw, ht = loop_half * ws, loop_half * ts_
+
+                # Direction out of the tape: CA->CB when available.
+                d = None
+                cb = next(
+                    (i for i in res.atom_indices if i not in (ca_index, res.c_index, res.o_index, res.n_index)),
+                    None,
+                )
+                if cb is not None:
+                    d = pos[cb] - ca_pos[k]
+                if d is None or np.linalg.norm(d) <= _EPS:
+                    d = binormals[k]
+                # Only the in-section components matter.
+                du = float(np.dot(d, normals[k]))
+                dv = float(np.dot(d, binormals[k]))
+                denom = np.hypot(du / max(hw, _EPS), dv / max(ht, _EPS))
+                if denom <= _EPS:
+                    continue
+                t = _SECTION_INFLATE / denom
+                anchors[ca_index] = ca_pos[k] + (normals[k] * du + binormals[k] * dv) * t
+    return anchors
 
 
 # ---------------------------------------------------------------------------

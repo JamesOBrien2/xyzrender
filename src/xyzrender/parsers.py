@@ -18,15 +18,19 @@ All parsers return a :class:`MolData` instance which carries:
 
 from __future__ import annotations
 
+import bisect
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 
 if TYPE_CHECKING:
     from xyzrender.types import ProteinData
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Protein HETATM classification sets
@@ -486,6 +490,63 @@ def _abc_angles_to_cell(a: float, b: float, c: float, alpha: float, beta: float,
 
 _BACKBONE_ATOM_NAMES = frozenset({"N", "CA", "C", "O", "OXT"})
 
+# altLoc values (col 17) that are kept.  Blank means "no alternate conformer";
+# "A" is the conventional first/highest-occupancy alternate.  Keeping every
+# altLoc would put two atoms at the same residue key, and the residue's CA
+# would silently become whichever came last.
+_KEPT_ALTLOCS = frozenset({"", "A"})
+
+
+class _AtomRecord(NamedTuple):
+    """Per-atom PDB metadata carried from the record loop to residue assembly."""
+
+    record: str  # "ATOM" or "HETATM"
+    atom_name: str
+    res_name: str
+    chain_id: str
+    res_seq: int
+    i_code: str  # insertion code (col 27); part of the residue identity
+    b_factor: float  # temperature factor / pLDDT (cols 61-66)
+
+
+def _residue_key(chain_id: str, res_seq: int, i_code: str, res_name: str) -> tuple[str, int, str, str]:
+    """Identity of a residue.
+
+    The insertion code is part of this on purpose.  Without it, an inserted
+    residue sharing a ``res_name`` with its neighbour (antibody CDRs are full
+    of these) collides on the key and the two residues *merge*, with
+    ``ca_index`` overwritten by whichever CA was seen last — a silent jump in
+    the backbone trace.
+    """
+    return chain_id, int(res_seq), i_code, res_name
+
+
+def _build_span_index(spans: list[tuple[str, int, int]]) -> dict[str, list[tuple[int, int]]]:
+    """Group HELIX/SHEET spans by chain, sorted by start for bisect lookup."""
+    out: dict[str, list[tuple[int, int]]] = {}
+    for chain, start, end in spans:
+        out.setdefault(chain, []).append((start, end))
+    for runs in out.values():
+        runs.sort()
+    return out
+
+
+def _span_contains(index: dict[str, list[tuple[int, int]]], chain_id: str, res_seq: int) -> bool:
+    """Whether *res_seq* falls in any span for *chain_id*.
+
+    Binary search rather than the previous linear scan: this used to be run
+    once per residue *and* once per atom, so a 8.6k-atom structure with 93
+    spans did ~800k pure-Python range checks.
+    """
+    runs = index.get(chain_id)
+    if not runs:
+        return False
+    lo = bisect.bisect_right(runs, (res_seq, _INF_SEQ)) - 1
+    return lo >= 0 and runs[lo][0] <= res_seq <= runs[lo][1]
+
+
+_INF_SEQ = 1 << 62
+
 
 def parse_pdb(path: str | Path) -> MolData:
     """Parse a PDB file.
@@ -525,19 +586,39 @@ def parse_pdb(path: str | Path) -> MolData:
     conect: dict[int, set[int]] = {}
 
     # Protein metadata: per-atom record info for later assembly
-    # Each entry: (record_type, atom_name, res_name, chain_id, res_seq)
-    atom_meta: list[tuple[str, str, str, str, int]] = []
+    atom_meta: list[_AtomRecord] = []
 
     # Secondary structure spans
     helix_spans: list[tuple[str, int, int]] = []
     sheet_spans: list[tuple[str, int, int]] = []
 
     has_chain_info = False  # set True when we see chain IDs
+    # Multi-model files (NMR ensembles) hold the same molecule many times over.
+    # Without this guard every model is concatenated into one atom list and
+    # ribboned on top of itself, and because res_seq restarts per model the
+    # backbone is also shredded into fragments.  Take the first model, as
+    # PyMOL and ChimeraX do.
+    past_first_model = False
+    n_models = 0
 
     for ln in lines:
         rec = ln[:6].strip().upper()
 
+        if rec == "MODEL":
+            n_models += 1
+            continue
+        if rec == "ENDMDL":
+            past_first_model = True
+            continue
+
         if rec in ("ATOM", "HETATM"):
+            if past_first_model:
+                continue
+            # Alternate conformers share a residue key; keeping both would let
+            # the residue's CA silently become whichever was parsed last.
+            altloc = ln[16].strip() if len(ln) > 16 else ""
+            if altloc not in _KEPT_ALTLOCS:
+                continue
             # PDB fixed-column format
             try:
                 serial = int(ln[6:11])
@@ -565,7 +646,12 @@ def parse_pdb(path: str | Path) -> MolData:
                 res_seq = int(ln[22:26])
             except (ValueError, IndexError):
                 res_seq = 0
-            atom_meta.append((rec, atom_name, res_name, chain_id, res_seq))
+            i_code = ln[26].strip() if len(ln) > 26 else ""
+            try:
+                b_factor = float(ln[60:66])
+            except (ValueError, IndexError):
+                b_factor = 0.0
+            atom_meta.append(_AtomRecord(rec, atom_name, res_name, chain_id, res_seq, i_code, b_factor))
             if chain_id:
                 has_chain_info = True
 
@@ -649,36 +735,34 @@ def parse_pdb(path: str | Path) -> MolData:
     protein_data: ProteinData | None = None
     if has_chain_info and atom_meta:
         protein_data = _build_protein_data(atom_meta, helix_spans, sheet_spans)
-    helix_lookup: dict[str, list[tuple[int, int]]] = {}
-    for chain, start, end in helix_spans:
-        helix_lookup.setdefault(chain, []).append((start, end))
-    sheet_lookup: dict[str, list[tuple[int, int]]] = {}
-    for chain, start, end in sheet_spans:
-        sheet_lookup.setdefault(chain, []).append((start, end))
+    helix_index = _build_span_index(helix_spans)
+    sheet_index = _build_span_index(sheet_spans)
 
     def _ss_type(chain_id: str, res_seq: int, rec: str) -> str:
         if rec != "ATOM":
             return "C"
-        for s, e in helix_lookup.get(chain_id, []):
-            if s <= res_seq <= e:
-                return "H"
-        for s, e in sheet_lookup.get(chain_id, []):
-            if s <= res_seq <= e:
-                return "E"
+        if _span_contains(helix_index, chain_id, res_seq):
+            return "H"
+        if _span_contains(sheet_index, chain_id, res_seq):
+            return "E"
         return "C"
 
-    atom_annotations: list[dict[str, object]] = []
-    for rec, atom_name, res_name, chain_id, res_seq in atom_meta:
-        atom_annotations.append(
-            {
-                "record_type": rec,
-                "atom_name": atom_name,
-                "res_name": res_name or "UNK",
-                "res_seq": int(res_seq),
-                "chain_id": chain_id or "A",
-                "ss_type": _ss_type(chain_id, res_seq, rec),
-            }
-        )
+    atom_annotations: list[dict[str, object]] = [
+        {
+            "record_type": a.record,
+            "atom_name": a.atom_name,
+            "res_name": a.res_name or "UNK",
+            "res_seq": a.res_seq,
+            "chain_id": a.chain_id or "A",
+            "i_code": a.i_code,
+            "b_factor": a.b_factor,
+            "ss_type": _ss_type(a.chain_id, a.res_seq, a.record),
+        }
+        for a in atom_meta
+    ]
+
+    if n_models > 1:
+        logger.info("PDB contains %d models; rendering model 1", n_models)
 
     return MolData(
         atoms=atoms,
@@ -691,28 +775,21 @@ def parse_pdb(path: str | Path) -> MolData:
 
 
 def _build_protein_data(
-    atom_meta: list[tuple[str, str, str, str, int]],
+    atom_meta: list[_AtomRecord],
     helix_spans: list[tuple[str, int, int]],
     sheet_spans: list[tuple[str, int, int]],
 ) -> "ProteinData":
     """Assemble :class:`ProteinData` from per-atom metadata."""
     from xyzrender.types import ChainData, ProteinData, ResidueData
 
-    # Build helix/sheet lookup: chain_id → list of (start, end) ranges
-    helix_lookup: dict[str, list[tuple[int, int]]] = {}
-    for chain, start, end in helix_spans:
-        helix_lookup.setdefault(chain, []).append((start, end))
-    sheet_lookup: dict[str, list[tuple[int, int]]] = {}
-    for chain, start, end in sheet_spans:
-        sheet_lookup.setdefault(chain, []).append((start, end))
+    helix_index = _build_span_index(helix_spans)
+    sheet_index = _build_span_index(sheet_spans)
 
     def _ss_type(chain_id: str, res_seq: int) -> str:
-        for s, e in helix_lookup.get(chain_id, []):
-            if s <= res_seq <= e:
-                return "H"
-        for s, e in sheet_lookup.get(chain_id, []):
-            if s <= res_seq <= e:
-                return "E"
+        if _span_contains(helix_index, chain_id, res_seq):
+            return "H"
+        if _span_contains(sheet_index, chain_id, res_seq):
+            return "E"
         return "C"
 
     # Accumulate residues per chain, grouping consecutive (chain_id, res_seq, res_name)
@@ -725,37 +802,41 @@ def _build_protein_data(
     sidechain_indices: set[int] = set()
 
     # Group atoms into residues: key = (chain_id, res_seq, res_name)
-    residue_atoms: dict[tuple[str, int, str], list[tuple[int, str, str]]] = {}
-    residue_order: list[tuple[str, int, str]] = []
+    residue_atoms: dict[tuple[str, int, str, str], list[tuple[int, str, float]]] = {}
+    residue_order: list[tuple[str, int, str, str]] = []
 
-    for idx, (rec, atom_name, res_name, chain_id, res_seq) in enumerate(atom_meta):
-        if rec == "HETATM":
+    for idx, a in enumerate(atom_meta):
+        if a.record == "HETATM":
             hetatm_indices.add(idx)
-            if res_name in _WATER_RESNAMES:
+            if a.res_name in _WATER_RESNAMES:
                 water_indices.add(idx)
-            elif res_name in _ION_RESNAMES:
+            elif a.res_name in _ION_RESNAMES:
                 ion_indices.add(idx)
             else:
                 ligand_indices.add(idx)
             continue
 
-        key = (chain_id, res_seq, res_name)
+        key = _residue_key(a.chain_id, a.res_seq, a.i_code, a.res_name)
         if key not in residue_atoms:
             residue_atoms[key] = []
             residue_order.append(key)
-        residue_atoms[key].append((idx, atom_name, rec))
+        residue_atoms[key].append((idx, a.atom_name, a.b_factor))
 
     # Build ResidueData objects
-    for chain_id, res_seq, res_name in residue_order:
-        entries = residue_atoms[(chain_id, res_seq, res_name)]
+    for key in residue_order:
+        chain_id, res_seq, i_code, res_name = key
+        entries = residue_atoms[key]
         all_indices = [i for i, _, _ in entries]
         ca_index: int | None = None
         c_index: int | None = None
         o_index: int | None = None
         n_index: int | None = None
 
-        for i, atom_name, _ in entries:
+        ca_b_factor: float | None = None
+        for i, atom_name, b_fac in entries:
             aname_upper = atom_name.upper()
+            if aname_upper == "CA":
+                ca_b_factor = b_fac
             if aname_upper == "CA":
                 ca_index = i
                 backbone_indices.add(i)
@@ -773,6 +854,11 @@ def _build_protein_data(
                 sidechain_indices.add(i)
 
         ss = _ss_type(chain_id, res_seq)
+        # CA B-factor is the per-residue value (it is what pLDDT is reported
+        # on); fall back to the residue mean when the CA is missing.
+        if ca_b_factor is None:
+            b_vals = [b for _, _, b in entries]
+            ca_b_factor = sum(b_vals) / len(b_vals) if b_vals else 0.0
         res = ResidueData(
             res_name=res_name,
             res_seq=res_seq,
@@ -783,6 +869,8 @@ def _build_protein_data(
             o_index=o_index,
             n_index=n_index,
             ss_type=ss,
+            i_code=i_code,
+            b_factor=ca_b_factor,
         )
         chains.setdefault(chain_id, []).append(res)
 

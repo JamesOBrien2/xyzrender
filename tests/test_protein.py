@@ -127,6 +127,40 @@ def sheet_pdb(tmp_path):
 
 
 @pytest.fixture
+def sidechain_pdb(tmp_path):
+    """Backbone with CB/CG sidechains, and CONECT so bonds exist without rebuild."""
+    lines = []
+    serial = 1
+    conect = []
+    for k in range(6):
+        base = k * 3.8
+        ids = {}
+        for name, off, elem in (
+            ("N", (0.0, 0.0, 0.0), "N"),
+            ("CA", (1.5, 0.0, 0.0), "C"),
+            ("C", (2.5, 0.0, 0.0), "C"),
+            ("O", (3.0, 0.9, 0.0), "O"),
+            ("CB", (1.2, 0.0, 1.5), "C"),
+            ("CG", (1.0, 0.0, 3.0), "C"),
+        ):
+            lines.append(_atom_line(serial, name, "ALA", "A", k + 1, (base + off[0], off[1], off[2]), elem=elem))
+            ids[name] = serial
+            serial += 1
+        conect += [
+            (ids["N"], ids["CA"]),
+            (ids["CA"], ids["C"]),
+            (ids["C"], ids["O"]),
+            (ids["CA"], ids["CB"]),
+            (ids["CB"], ids["CG"]),
+        ]
+    for a, b in conect:
+        lines.append(f"CONECT{a:>5}{b:>5}")
+    p_ = tmp_path / "sidechain.pdb"
+    p_.write_text("\n".join(lines) + "\n")
+    return p_
+
+
+@pytest.fixture
 def hetatm_pdb(tmp_path):
     p = tmp_path / "hetatm.pdb"
     p.write_text(_HETATM_PDB)
@@ -917,3 +951,213 @@ def test_short_strand_still_renders(tmp_path):
     hw, _, _ = _sample_widths(["E", "E"], np.linspace(0, 1, 16), 2.0, 2.0, 0.4, 0.3, 0.3, 0.4)
     assert np.isfinite(hw).all()
     assert hw.max() > 0
+
+
+# ---------------------------------------------------------------------------
+# PDB record handling: MODEL / altLoc / insertion codes / tempFactor
+# ---------------------------------------------------------------------------
+
+
+def _atom_line(serial, name, res_name, chain, res_seq, xyz, *, altloc=" ", icode=" ", bfac=0.0, elem=None):
+    """One fixed-column ATOM record."""
+    elem = elem or name[0]
+    x, y, z = xyz
+    return (
+        f"ATOM  {serial:>5} {name:<4}{altloc}{res_name:>3} {chain}{res_seq:>4}{icode}   "
+        f"{x:>8.3f}{y:>8.3f}{z:>8.3f}{1.0:>6.2f}{bfac:>6.2f}          {elem:>2}"
+    )
+
+
+def test_multi_model_pdb_uses_first_model_only(tmp_path):
+    """An NMR ensemble must not concatenate every model into one structure.
+
+    Without this the models are overlaid *and* res_seq restarts per model, so
+    the backbone is shredded into fragments at every model boundary.
+    """
+    lines = []
+    for model in (1, 2, 3):
+        lines.append(f"MODEL     {model:>4}")
+        for i in range(3):
+            lines.append(_atom_line(i + 1, "CA", "ALA", "A", i + 1, (i * 3.8, model * 10.0, 0.0), elem="C"))
+        lines.append("ENDMDL")
+    p = tmp_path / "nmr.pdb"
+    p.write_text("\n".join(lines) + "\n")
+
+    data = parse_pdb(p)
+    assert len(data.atoms) == 3, f"expected 1 model (3 atoms), got {len(data.atoms)}"
+    # Model 1 was the one kept.
+    assert data.atoms[0][1][1] == pytest.approx(10.0)
+
+
+def test_altloc_keeps_one_conformer(tmp_path):
+    """Alternate conformers share a residue key; only altLoc blank/A is kept."""
+    lines = [
+        _atom_line(1, "N", "SER", "A", 1, (0.0, 0.0, 0.0), elem="N"),
+        _atom_line(2, "CA", "SER", "A", 1, (1.5, 0.0, 0.0), altloc="A", elem="C"),
+        _atom_line(3, "CA", "SER", "A", 1, (1.5, 0.9, 0.0), altloc="B", elem="C"),
+        _atom_line(4, "C", "SER", "A", 1, (2.5, 0.0, 0.0), elem="C"),
+    ]
+    p = tmp_path / "altloc.pdb"
+    p.write_text("\n".join(lines) + "\n")
+
+    data = parse_pdb(p)
+    assert len(data.atoms) == 3, "altLoc B should have been dropped"
+    pd = _require_protein_data(data.protein_data)
+    res = pd.chains["A"].residues[0]
+    assert data.atoms[res.ca_index][1][1] == pytest.approx(0.0), "kept the wrong conformer"
+
+
+def test_insertion_codes_do_not_merge_residues(tmp_path):
+    """Residues 100, 100A, 100B are distinct even when res_name repeats.
+
+    Without the insertion code in the residue key they collide, and ca_index
+    is overwritten by whichever CA was parsed last -- a silent jump in the
+    backbone trace.
+    """
+    lines = []
+    serial = 1
+    for k, icode in enumerate((" ", "A", "B")):
+        for name, off in (("N", 0.0), ("CA", 1.5), ("C", 2.5)):
+            lines.append(
+                _atom_line(
+                    serial,
+                    name,
+                    "SER",
+                    "A",
+                    100,
+                    (k * 3.8 + off, 0.0, 0.0),
+                    icode=icode,
+                    elem=name[0],
+                )
+            )
+            serial += 1
+    p = tmp_path / "icode.pdb"
+    p.write_text("\n".join(lines) + "\n")
+
+    pd = _require_protein_data(parse_pdb(p).protein_data)
+    residues = pd.chains["A"].residues
+    assert len(residues) == 3, f"insertion codes merged: {len(residues)} residue(s)"
+    assert [r.i_code for r in residues] == ["", "A", "B"]
+    assert len({r.ca_index for r in residues}) == 3
+
+
+def test_insertion_codes_do_not_split_the_ribbon(tmp_path):
+    """An insertion repeats res_seq; that is a continuation, not a chain break."""
+    import numpy as np
+
+    from xyzrender.ribbon import _split_backbone_segments
+
+    pd = _require_protein_data(
+        parse_pdb(
+            _write_icode_chain(tmp_path),
+        ).protein_data
+    )
+    residues = pd.chains["A"].residues
+    pos = np.array([[i * 3.8, 0.0, 0.0] for i in range(sum(len(r.atom_indices) for r in residues) + 5)])
+    for r in residues:
+        pos[r.ca_index] = [residues.index(r) * 3.8, 0.0, 0.0]
+    segs = _split_backbone_segments(residues, pos)
+    assert len(segs) == 1, f"insertion split the backbone into {len(segs)} segments"
+
+
+def _write_icode_chain(tmp_path):
+    lines = []
+    serial = 1
+    seq_icodes = [(99, " "), (100, " "), (100, "A"), (100, "B"), (101, " ")]
+    for k, (seq, icode) in enumerate(seq_icodes):
+        for name, off in (("N", 0.0), ("CA", 1.5), ("C", 2.5)):
+            lines.append(
+                _atom_line(serial, name, "SER", "A", seq, (k * 3.8 + off, 0.0, 0.0), icode=icode, elem=name[0])
+            )
+            serial += 1
+    p = tmp_path / "icode_chain.pdb"
+    p.write_text("\n".join(lines) + "\n")
+    return p
+
+
+def test_temperature_factor_is_parsed(tmp_path):
+    """B-factor / pLDDT is read from cols 61-66 onto the residue."""
+    lines = [
+        _atom_line(1, "N", "ALA", "A", 1, (0.0, 0.0, 0.0), bfac=11.0, elem="N"),
+        _atom_line(2, "CA", "ALA", "A", 1, (1.5, 0.0, 0.0), bfac=42.5, elem="C"),
+        _atom_line(3, "C", "ALA", "A", 1, (2.5, 0.0, 0.0), bfac=13.0, elem="C"),
+    ]
+    p = tmp_path / "bfac.pdb"
+    p.write_text("\n".join(lines) + "\n")
+
+    pd = _require_protein_data(parse_pdb(p).protein_data)
+    # The CA value is the per-residue B-factor (pLDDT is reported on CA).
+    assert pd.chains["A"].residues[0].b_factor == pytest.approx(42.5)
+
+
+# ---------------------------------------------------------------------------
+# Sidechain attachment and selection
+# ---------------------------------------------------------------------------
+
+
+def test_sidechain_anchor_lies_outside_the_ribbon(sidechain_pdb):
+    """The attachment point clears the swept surface rather than sitting at CA.
+
+    CA is the tape's centreline, so a bond starting there is buried inside the
+    solid; the anchor is where the CA->CB ray exits the surface.
+    """
+    import numpy as np
+
+    from xyzrender.ribbon import sidechain_anchors
+    from xyzrender.types import RenderConfig
+
+    mol = load(sidechain_pdb)
+    pd = _require_protein_data(mol.protein_data)
+    pos = np.array([mol.graph.nodes[i]["position"] for i in mol.graph.nodes()])
+    cfg = RenderConfig(protein=True, show_sidechain=True)
+
+    anchors = sidechain_anchors(pd, cfg, pos)
+    assert anchors, "no sidechain anchors produced"
+    for ca_idx, pt in anchors.items():
+        assert np.linalg.norm(pt - pos[ca_idx]) > 1e-3, "anchor collapsed onto CA"
+
+
+def test_sidechain_bond_survives_hidden_ca(sidechain_pdb):
+    """--sidechain must emit the CA-CB bond even though CA is hidden.
+
+    Regression for the original defect: renderer.py dropped every bond with a
+    hidden endpoint, so sidechains floated unattached to the ribbon.
+    """
+    mol = load(sidechain_pdb)
+    plain = str(render(mol, protein=True, orient=False))
+    with_sc = str(render(mol, protein=True, sidechain=True, orient=False))
+    assert with_sc.count("<line") > plain.count("<line")
+
+
+def test_select_sidechain_atoms_by_residue_number(two_chain_pdb):
+    """Residue selectors accept numbers, ranges and chain qualifiers."""
+    from xyzrender.ribbon import select_sidechain_atoms
+
+    pd = _require_protein_data(load(two_chain_pdb).protein_data)
+    all_seqs = {r.res_seq for c in pd.chains.values() for r in c.residues}
+    first = min(all_seqs)
+
+    everything = select_sidechain_atoms(pd, None)
+    just_one = select_sidechain_atoms(pd, str(first))
+    assert just_one
+    assert just_one < everything
+
+    chain_a = next(iter(pd.chains))
+    qualified = select_sidechain_atoms(pd, f"{chain_a}:{first}")
+    assert qualified <= just_one
+
+
+def test_select_sidechain_atoms_rejects_garbage(two_chain_pdb):
+    from xyzrender.ribbon import select_sidechain_atoms
+
+    pd = _require_protein_data(load(two_chain_pdb).protein_data)
+    with pytest.raises(ValueError, match="invalid residue selector"):
+        select_sidechain_atoms(pd, "not-a-residue")
+
+
+def test_sidechain_selector_restricts_what_is_drawn(sidechain_pdb):
+    """A restricted selector draws fewer atoms than bare --sidechain."""
+    mol = load(sidechain_pdb)
+    everything = str(render(mol, protein=True, sidechain=True, orient=False))
+    restricted = str(render(mol, protein=True, sidechain="1", orient=False))
+    assert restricted.count("<circle") < everything.count("<circle")

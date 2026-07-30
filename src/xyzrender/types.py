@@ -293,6 +293,8 @@ class ResidueData:
     o_index: int | None  # backbone O (used for ribbon plane normal)
     n_index: int | None  # backbone N
     ss_type: str = "C"  # "H" helix, "E" sheet, "C" coil/loop
+    i_code: str = ""  # PDB insertion code; part of residue identity
+    b_factor: float = 0.0  # CA temperature factor (doubles as AlphaFold pLDDT)
 
 
 @dataclass
@@ -545,6 +547,11 @@ class RenderConfig:
     ribbon_width: float = 4.5
     loop_width: float = 0.9  # Å — full diameter of the round coil tube
     show_sidechain: bool = False  # show amino-acid side chains as sticks
+    # Restrict sidechains to these residues, as "45,102-108" (residue numbers,
+    # optionally "A:45" to name a chain).  None means every residue, which is
+    # almost never the figure you want -- a whole chain of sidechains is an
+    # unreadable thicket.
+    sidechain_residues: str | None = None
     exclude_chains: set[str] = field(default_factory=set)  # chain IDs hidden in protein mode
     ligand_highlight: bool = False  # recolor ligand atoms/bonds in protein mode
     ligand_color: str = "#ffb347"  # default ligand highlight color (hex)

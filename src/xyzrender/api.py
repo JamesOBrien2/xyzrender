@@ -959,7 +959,7 @@ def render(
     exclude_chains: str | list[str] | None = None,
     ribbon_width: float | None = None,
     loop_width: float | None = None,
-    sidechain: bool = False,
+    sidechain: bool | str = False,
     # --- Ligands ---
     ligand_highlight: bool = False,
     ligand_color: str | None = None,
@@ -1314,6 +1314,8 @@ def render(
         cfg.loop_width = loop_width
     if sidechain:
         cfg.show_sidechain = True
+        # A string restricts to those residues; bare True means all of them.
+        cfg.sidechain_residues = sidechain if isinstance(sidechain, str) else None
     if exclude_chains is not None:
         if isinstance(exclude_chains, str):
             cfg.exclude_chains = {c.strip() for c in exclude_chains.split(",") if c.strip()}
@@ -1683,7 +1685,7 @@ def render_gif(
     exclude_chains: str | list[str] | None = None,
     ribbon_width: float | None = None,
     loop_width: float | None = None,
-    sidechain: bool = False,
+    sidechain: bool | str = False,
     # --- Ligands ---
     ligand_highlight: bool = False,
     ligand_color: str | None = None,
@@ -1912,6 +1914,8 @@ def render_gif(
         cfg.loop_width = loop_width
     if sidechain:
         cfg.show_sidechain = True
+        # A string restricts to those residues; bare True means all of them.
+        cfg.sidechain_residues = sidechain if isinstance(sidechain, str) else None
     if exclude_chains is not None:
         if isinstance(exclude_chains, str):
             cfg.exclude_chains = {c.strip() for c in exclude_chains.split(",") if c.strip()}
