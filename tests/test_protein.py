@@ -932,7 +932,8 @@ def test_strand_gets_an_arrowhead(sheet_pdb):
 
     ss = ["E"] * 8
     res_t = np.linspace(0, 7, 60)
-    hw, _, _ = _sample_widths(ss, res_t, 2.0, 2.0, 0.4, 0.3, 0.3, 0.4)
+    dims = {"H": (2.0, 0.3), "E": (2.0, 0.3), "C": (0.4, 0.4)}
+    hw, _, _ = _sample_widths(ss, res_t, dims)
     body = hw[res_t <= 5.0].mean()
     assert hw.max() > body * 1.5, "no flange"
     assert hw[-1] < body * 0.5, "strand does not taper to a point"
@@ -948,7 +949,8 @@ def test_short_strand_still_renders(tmp_path):
 
     from xyzrender.ribbon import _sample_widths
 
-    hw, _, _ = _sample_widths(["E", "E"], np.linspace(0, 1, 16), 2.0, 2.0, 0.4, 0.3, 0.3, 0.4)
+    dims = {"H": (2.0, 0.3), "E": (2.0, 0.3), "C": (0.4, 0.4)}
+    hw, _, _ = _sample_widths(["E", "E"], np.linspace(0, 1, 16), dims)
     assert np.isfinite(hw).all()
     assert hw.max() > 0
 

@@ -64,6 +64,16 @@ _PROFILE_N = 8
 _SECTION_P_FLAT = 0.38  # helix / sheet
 _SECTION_P_ROUND = 1.0  # coil
 
+# Cross-section extents as multiples of the ribbon half-width.  Strands are a
+# touch narrower than helices so the arrowhead flange reads as an overhang, and
+# both are thin tapes.  Coils use the loop half-width and stay circular.
+# `_section_dims` is the single source of truth -- both the swept surface and
+# the sidechain anchor solve must agree, or sidechains float off the tape.
+_SEC_HELIX_HW = 1.0
+_SEC_SHEET_HW = 0.92
+_SEC_HELIX_HT = 0.13
+_SEC_SHEET_HT = 0.12
+
 # Backbone discontinuity thresholds (metadata + geometry)
 _MAX_SEQ_STEP = 1
 _MAX_CA_GAP = 5.0  # Å
@@ -501,12 +511,7 @@ def _section_offsets(p_exp: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 def _residue_section_params(
     ss: list[str],
-    helix_hw: float,
-    sheet_hw: float,
-    coil_hw: float,
-    helix_ht: float,
-    sheet_ht: float,
-    coil_ht: float,
+    dims: dict[str, tuple[float, float]],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Per-residue (half_width, half_thickness, section exponent)."""
     n = len(ss)
@@ -514,12 +519,9 @@ def _residue_section_params(
     ht = np.empty(n)
     pe = np.empty(n)
     for i, s in enumerate(ss):
-        if s == "H":
-            hw[i], ht[i], pe[i] = helix_hw, helix_ht, _SECTION_P_FLAT
-        elif s == "E":
-            hw[i], ht[i], pe[i] = sheet_hw, sheet_ht, _SECTION_P_FLAT
-        else:
-            hw[i], ht[i], pe[i] = coil_hw, coil_ht, _SECTION_P_ROUND
+        key = s if s in ("H", "E") else "C"
+        hw[i], ht[i] = dims[key]
+        pe[i] = _SECTION_P_FLAT if key in ("H", "E") else _SECTION_P_ROUND
     return hw, ht, pe
 
 
@@ -552,12 +554,7 @@ def _runs_of_type(ss: list[str], target: str) -> list[tuple[int, int]]:
 def _sample_widths(
     ss: list[str],
     res_t: np.ndarray,
-    helix_hw: float,
-    sheet_hw: float,
-    coil_hw: float,
-    helix_ht: float,
-    sheet_ht: float,
-    coil_ht: float,
+    dims: dict[str, tuple[float, float]],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Per-sample half-width / half-thickness / section exponent.
 
@@ -566,7 +563,7 @@ def _sample_widths(
     tapers to a point at the last one, so the arrow is part of the same swept
     surface and shares its depth ordering, normals and stroke.
     """
-    hw_r, ht_r, pe_r = _residue_section_params(ss, helix_hw, sheet_hw, coil_hw, helix_ht, sheet_ht, coil_ht)
+    hw_r, ht_r, pe_r = _residue_section_params(ss, dims)
     hw_r, ht_r, pe_r = _smooth3(hw_r), _smooth3(ht_r), _smooth3(pe_r)
 
     n = len(ss)
@@ -584,7 +581,7 @@ def _sample_widths(
         if not sel.any():
             continue
         frac = np.clip((res_t[sel] - base) / max(float(e) - base, _EPS), 0.0, 1.0)
-        hw[sel] = sheet_hw * (_ARROW_FLANGE + (_ARROW_TIP_FRAC - _ARROW_FLANGE) * frac)
+        hw[sel] = dims["E"][0] * (_ARROW_FLANGE + (_ARROW_TIP_FRAC - _ARROW_FLANGE) * frac)
     return hw, ht, pe
 
 
@@ -647,6 +644,20 @@ class _Shader:
 # ---------------------------------------------------------------------------
 
 
+def _section_dims(
+    half_ribbon: float,
+    loop_half: float,
+    style: RibbonStyleProfile,
+) -> dict[str, tuple[float, float]]:
+    """Build the SS -> (half-width, half-thickness) table for the swept cross-section."""
+    ws, ts_ = style.width_scale, style.thickness_scale
+    return {
+        "H": (half_ribbon * _SEC_HELIX_HW * ws, half_ribbon * _SEC_HELIX_HT * ts_),
+        "E": (half_ribbon * _SEC_SHEET_HW * ws, half_ribbon * _SEC_SHEET_HT * ts_),
+        "C": (loop_half * ws, loop_half * ts_),
+    }
+
+
 def _segment_items(
     ca_pos: np.ndarray,
     o_pos: list[np.ndarray | None],
@@ -700,18 +711,8 @@ def _segment_items(
     binormals = _unit_rows(np.cross(tangents, normals))
 
     # --- 3. cross-section size per sample ----------------------------------
-    ws = style.width_scale
-    ts_ = style.thickness_scale
-    hw, ht, pe = _sample_widths(
-        ss,
-        res_t,
-        helix_hw=half_ribbon * ws,
-        sheet_hw=half_ribbon * 0.92 * ws,
-        coil_hw=loop_half * ws,
-        helix_ht=half_ribbon * 0.13 * ts_,
-        sheet_ht=half_ribbon * 0.12 * ts_,
-        coil_ht=loop_half * ts_,
-    )
+    dims = _section_dims(half_ribbon, loop_half, style)
+    hw, ht, pe = _sample_widths(ss, res_t, dims)
     u, v = _section_offsets(pe)
 
     # --- 4. vertices: (m, _PROFILE_N, 3) -----------------------------------
@@ -954,9 +955,7 @@ def sidechain_anchors(
     leaves the tape face, not its edge).
     """
     style = ribbon_style_profile(cfg.protein_style)
-    half_ribbon = cfg.ribbon_width / 2.0
-    loop_half = cfg.loop_width / 2.0
-    ws, ts_ = style.width_scale, style.thickness_scale
+    dims = _section_dims(cfg.ribbon_width / 2.0, cfg.loop_width / 2.0, style)
 
     anchors: dict[int, np.ndarray] = {}
     for cid, chain in protein_data.chains.items():
@@ -972,12 +971,7 @@ def sidechain_anchors(
 
             res_with_ca = [(r, r.ca_index) for r in seg if r.ca_index is not None]
             for k, (res, ca_index) in enumerate(res_with_ca):
-                if res.ss_type == "H":
-                    hw, ht = half_ribbon * ws, half_ribbon * 0.13 * ts_
-                elif res.ss_type == "E":
-                    hw, ht = half_ribbon * 0.92 * ws, half_ribbon * 0.12 * ts_
-                else:
-                    hw, ht = loop_half * ws, loop_half * ts_
+                hw, ht = dims[res.ss_type if res.ss_type in ("H", "E") else "C"]
 
                 # Direction out of the tape: CA->CB when available.
                 d = None
