@@ -334,6 +334,7 @@ class ProteinData:
     confidence_reasons: list[str] = field(default_factory=list)
     provenance: list[str] = field(default_factory=list)
     trace_chains: dict[str, list[int]] = field(default_factory=dict)
+    het_chains: dict[str, set[int]] = field(default_factory=dict)  # non-polymer atoms by chain
 
 
 @dataclass
@@ -353,6 +354,7 @@ class ProteinSemantics:
     confidence_reasons: list[str] = field(default_factory=list)
     provenance: list[str] = field(default_factory=list)
     trace_chains: dict[str, list[int]] = field(default_factory=dict)  # fallback trace atom indices by chain
+    het_chains: dict[str, set[int]] = field(default_factory=dict)  # non-polymer atom indices by chain
 
 
 @dataclass

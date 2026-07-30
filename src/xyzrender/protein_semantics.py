@@ -57,6 +57,7 @@ def from_protein_data(data: "ProteinData", *, provenance: str = "pdb") -> Protei
         confidence_reasons=[f"semantic metadata extracted from {provenance}"],
         provenance=[provenance],
         trace_chains={},
+        het_chains={cid: set(idxs) for cid, idxs in data.het_chains.items()},
     )
 
 
@@ -135,6 +136,7 @@ def _to_xyzrender_semantics(xg_sem: Any) -> ProteinSemantics:
         confidence_reasons=[str(r) for r in get_top("confidence_reasons", [])],
         provenance=[str(p) for p in get_top("provenance", [])],
         trace_chains={str(cid): [int(i) for i in idxs] for cid, idxs in dict(get_top("trace_chains", {})).items()},
+        het_chains={str(cid): {int(i) for i in idxs} for cid, idxs in dict(get_top("het_chains", {})).items()},
     )
 
 

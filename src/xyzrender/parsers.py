@@ -804,10 +804,14 @@ def _build_protein_data(
     # Group atoms into residues: key = (chain_id, res_seq, res_name)
     residue_atoms: dict[tuple[str, int, str, str], list[tuple[int, str, float]]] = {}
     residue_order: list[tuple[str, int, str, str]] = []
+    # Heteroatoms never join a chain's residue list; keep them addressable so
+    # excluding a chain can drop its ligands too.
+    het_chains: dict[str, set[int]] = {}
 
     for idx, a in enumerate(atom_meta):
         if a.record == "HETATM":
             hetatm_indices.add(idx)
+            het_chains.setdefault(a.chain_id or "A", set()).add(idx)
             if a.res_name in _WATER_RESNAMES:
                 water_indices.add(idx)
             elif a.res_name in _ION_RESNAMES:
@@ -885,6 +889,7 @@ def _build_protein_data(
         ligand_indices=ligand_indices,
         water_indices=water_indices,
         ion_indices=ion_indices,
+        het_chains=het_chains,
     )
 
 
