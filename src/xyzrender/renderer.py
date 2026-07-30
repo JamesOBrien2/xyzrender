@@ -1648,18 +1648,19 @@ def render_svg(
         _outgoing_bonds: list[tuple[int, _BondAttrs, float]] = []
         if not cfg.hide_bonds and bw > 0:
             for aj_int in bond_adj.get(ai, ()):
-                # A sidechain-attachment bond is always emitted from the
-                # sidechain side: the CA end is hidden and `continue`s before
-                # this loop ever runs, so deferring to z-order would drop the
-                # bond outright whenever the CA sits behind its own CB.
-                _sc_bond = aj_int in _sc_anchor
-                if _z_rank[aj_int] <= idx and not _sc_bond:
-                    continue
                 battrs = bonds[(ai, aj_int)]
-                # Hidden endpoints suppress covalent/TS bonds, but NCI overlays
-                # stay visible — in protein ribbon mode the protein-side partner
-                # of a ligand contact is a hidden backbone/sidechain atom.
-                if aj_int in hidden and battrs.style != BondStyle.DOTTED and not _sc_bond:
+                # Two kinds of bond have a deliberately hidden endpoint: a
+                # sidechain's attachment to the ribbon, and an NCI contact
+                # whose protein-side partner is a hidden backbone atom.  Both
+                # must be emitted from the *visible* side regardless of depth
+                # order — the hidden atom `continue`s before this loop ever
+                # runs, so deferring to z-order drops the bond outright
+                # whenever the hidden partner happens to sit behind.
+                _hidden_partner = (aj_int in _sc_anchor) or (aj_int in hidden and battrs.style == BondStyle.DOTTED)
+                if _z_rank[aj_int] <= idx and not _hidden_partner:
+                    continue
+                # Otherwise a hidden endpoint suppresses the bond.
+                if aj_int in hidden and not _hidden_partner:
                     continue
                 _aj_image = _is_image[aj_int]
                 _aj_struct_op = struct_opacities[aj_int] if not _aj_image else None

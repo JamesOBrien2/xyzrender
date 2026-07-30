@@ -46,11 +46,31 @@ if TYPE_CHECKING:
 from xyzrender.colors import resolve_color
 from xyzrender.config import SurfaceOverrides
 from xyzrender.ribbon import default_ribbon_style, normalize_ribbon_style, ribbon_style_names
-from xyzrender.types import GIFResult, OverlayConfig, RenderConfig, SVGResult
+from xyzrender.types import GIFResult, OverlayConfig, ProteinConfidence, RenderConfig, SVGResult
 from xyzrender.utils import parse_atom_indices
 
 logger = logging.getLogger(__name__)
 _PROTEIN_STYLES = set(ribbon_style_names(include_aliases=True))
+
+
+def _best_protein_semantics(
+    semantics: "ProteinSemantics | None",
+    protein_data: "ProteinData | None",
+) -> "ProteinSemantics | ProteinData | None":
+    """Pick the more informative of xyzgraph semantics and parser ProteinData.
+
+    xyzgraph declines structures that are not protein-like -- a two-residue
+    peptide with a bound ligand, say -- and then reports INSUFFICIENT.  The
+    parser's own ProteinData still carries usable chain, residue and
+    ligand/water/ion partitioning in that case, and features like
+    ``--highlight-ligand`` depend on it, so an empty INSUFFICIENT result must
+    not shadow it.
+    """
+    if semantics is None:
+        return protein_data
+    if protein_data is not None and semantics.confidence_tier == ProteinConfidence.INSUFFICIENT:
+        return protein_data
+    return semantics
 
 
 def _resolve_protein_mode(protein: bool | str | None) -> tuple[bool, str]:
@@ -538,7 +558,7 @@ def load(
     if nci_detect:
         from xyzrender.readers import detect_nci
 
-        _nci_sem = protein_semantics if protein_semantics is not None else protein_data
+        _nci_sem = _best_protein_semantics(protein_semantics, protein_data)
         graph = detect_nci(
             graph,
             protein_data=_nci_sem,
@@ -1247,7 +1267,7 @@ def render(
         cfg.mol_color = resolve_color(mol_color)
 
     # --- Highlight ---
-    _sem_for_selectors = mol.protein_semantics if mol.protein_semantics is not None else mol.protein_data
+    _sem_for_selectors = _best_protein_semantics(mol.protein_semantics, mol.protein_data)
     _apply_highlight(cfg, highlight=highlight, graph=mol.graph, protein_data=_sem_for_selectors)
 
     # --- Halos ---
@@ -1337,7 +1357,6 @@ def render(
     # - only run heuristics when protein rendering is explicitly requested
     if cfg.protein:
         from xyzrender.protein_semantics import extract_protein_semantics
-        from xyzrender.types import ProteinConfidence
 
         if rmol.protein_semantics is None or rmol.protein_semantics.confidence_tier == ProteinConfidence.INSUFFICIENT:
             rmol.protein_semantics = extract_protein_semantics(
@@ -1512,7 +1531,7 @@ def render(
 
     # --- Optional NCI edge filtering (ligand↔protein only) ---
     if nci_ligand_protein_only:
-        _nci_sem = rmol.protein_semantics if rmol.protein_semantics is not None else rmol.protein_data
+        _nci_sem = _best_protein_semantics(rmol.protein_semantics, rmol.protein_data)
         if _nci_sem is None:
             logger.warning(
                 "nci_ligand_protein_only requested but no protein/ligand semantics are available; keeping all NCI edges"
@@ -1526,7 +1545,7 @@ def render(
                 logger.info("nci_ligand_protein_only filter applied; 0 NCI interactions remained")
 
     # --- Render ---
-    _sem = rmol.protein_semantics if rmol.protein_semantics is not None else rmol.protein_data
+    _sem = _best_protein_semantics(rmol.protein_semantics, rmol.protein_data)
     svg = render_svg(rmol.graph, cfg, protein_data=_sem)
 
     # --- Write output ---
@@ -1885,7 +1904,7 @@ def render_gif(
         cfg.mol_color = resolve_color(mol_color)
 
     # --- Highlight ---
-    _sem_for_selectors = _gif_mol.protein_semantics if _gif_mol.protein_semantics is not None else _gif_mol.protein_data
+    _sem_for_selectors = _best_protein_semantics(_gif_mol.protein_semantics, _gif_mol.protein_data)
     _apply_highlight(cfg, highlight=highlight, graph=_gif_graph, protein_data=_sem_for_selectors)
 
     # --- Halos ---
@@ -2175,9 +2194,7 @@ def render_gif(
         if nci_ligand_protein_only:
             _nci_sem = None
             if isinstance(molecule, Molecule):
-                _nci_sem = (
-                    molecule.protein_semantics if molecule.protein_semantics is not None else molecule.protein_data
-                )
+                _nci_sem = _best_protein_semantics(molecule.protein_semantics, molecule.protein_data)
             if _nci_sem is not None:
                 from xyzrender.readers import filter_ligand_protein_nci
 
@@ -2216,9 +2233,7 @@ def render_gif(
             )
         _rot_protein_data = None
         if isinstance(molecule, Molecule):
-            _rot_protein_data = (
-                molecule.protein_semantics if molecule.protein_semantics is not None else molecule.protein_data
-            )
+            _rot_protein_data = _best_protein_semantics(molecule.protein_semantics, molecule.protein_data)
             if protein and _rot_protein_data is None:
                 from xyzrender.protein_semantics import extract_protein_semantics
 
