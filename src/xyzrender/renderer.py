@@ -267,12 +267,9 @@ def render_svg(
     # counted: the ribbon is drawn along them.
     _fit_pos, _fit_r = pos, fit_radii
     if cfg.protein and protein_data is not None and cfg.exclude_chains:
-        _drop: set[int] = set()
-        for _cid in cfg.exclude_chains:
-            _chain = protein_data.chains.get(_cid)
-            if _chain is not None:
-                for _res in _chain.residues:
-                    _drop.update(_res.atom_indices)
+        from xyzrender.ribbon import excluded_atom_indices
+
+        _drop = excluded_atom_indices(protein_data, cfg.exclude_chains)
         if _drop and len(_drop) < n:
             _keep = np.array([i for i in range(n) if i not in _drop], dtype=int)
             _fit_pos, _fit_r = pos[_keep], fit_radii[_keep]
@@ -530,17 +527,14 @@ def render_svg(
                 if neighbours and all(symbols[nb] == "C" for nb in neighbours):
                     hidden.add(ai)
 
-    # Protein ribbon mode: explicitly excluded chains (residue atoms only).
+    # Protein ribbon mode: explicitly excluded chains, ligands and all.
     if cfg.protein and protein_data is not None and cfg.exclude_chains:
-        for cid in cfg.exclude_chains:
-            chain = protein_data.chains.get(cid)
-            if chain is None:
-                continue
-            for res in chain.residues:
-                hidden.update(res.atom_indices)
+        from xyzrender.ribbon import excluded_atom_indices
+
+        hidden.update(excluded_atom_indices(protein_data, cfg.exclude_chains))
 
     # Protein ribbon mode: suppress backbone (and optionally sidechain) atoms.
-    # HETATM atoms are left visible for ball-and-stick rendering.
+    # HETATM atoms of the chains we keep are left visible for ball-and-stick.
     if cfg.protein and protein_data is not None:
         hidden.update(protein_data.backbone_indices)
         if not cfg.show_sidechain:

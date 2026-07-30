@@ -40,6 +40,8 @@ import numpy as np
 from xyzrender.colors import _FOG_NEAR, Color, blend_fog, palette_color
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from xyzrender.types import ProteinData, ProteinSemantics, RenderConfig, ResidueData
 
 logger = logging.getLogger(__name__)
@@ -88,8 +90,10 @@ _ARROW_TIP_FRAC = 0.06
 _LIGHT_DIR = np.array([-0.40, 0.55, 1.0])
 _LIGHT_DIR = _LIGHT_DIR / np.linalg.norm(_LIGHT_DIR)
 # Lambert term is remapped into [_SHADE_FLOOR, 1] before tinting so unlit
-# faces stay readable rather than going black.
-_SHADE_FLOOR = 0.35
+# faces stay readable rather than going black.  Kept low: the floor sets how
+# dark a shadowed face can get, and that contrast is what separates one strand
+# of a sheet from the one behind it.
+_SHADE_FLOOR = 0.15
 
 # Ribbon fog is attenuated relative to atom fog.  A protein spans a far larger
 # depth range than a small molecule, so applying the full atom-strength fog
@@ -125,8 +129,8 @@ _RIBBON_STYLE_PROFILES: dict[str, RibbonStyleProfile] = {
         width_scale=1.0,
         thickness_scale=1.0,
         shade_gain=0.95,
-        outline_px=0.0,
-        outline_dark=0.0,
+        outline_px=0.35,
+        outline_dark=0.25,
     ),
     # Flatter, textbook look: weak shading, visible dark contour.
     "illustration": RibbonStyleProfile(
@@ -658,6 +662,44 @@ def _section_dims(
     }
 
 
+def _silhouette_edges(
+    px: np.ndarray,
+    py: np.ndarray,
+    front: np.ndarray,
+    i: int,
+    j: int,
+    m: int,
+    outline: str,
+    sw: float,
+) -> list[str]:
+    """Stroke the edges of quad ``(i, j)`` that lie on the surface silhouette.
+
+    An edge is on the silhouette when the quad sharing it is back-facing (and so
+    culled) or absent at a segment end.  Stroking the quad itself instead draws
+    every interior mesh edge, which is what rendered `illustration` as a
+    wireframe.
+    """
+    n = front.shape[1]
+    k = (j + 1) % n
+    # (vertex, vertex, quad on the far side) for the two ring edges and the two
+    # rails.  The ring is closed, so only the rows can run out.
+    edges = (
+        ((i, j), (i, k), None if i == 0 else (i - 1, j)),
+        ((i + 1, j), (i + 1, k), None if i == m - 2 else (i + 1, j)),
+        ((i, j), (i + 1, j), (i, (j - 1) % n)),
+        ((i, k), (i + 1, k), (i, k)),
+    )
+    out: list[str] = []
+    for a, b, nb in edges:
+        if nb is not None and front[nb]:
+            continue
+        out.append(
+            f'  <line x1="{px[a]:.1f}" y1="{py[a]:.1f}" x2="{px[b]:.1f}" y2="{py[b]:.1f}" '
+            f'stroke="{outline}" stroke-width="{sw:.2f}" stroke-linecap="round"/>'
+        )
+    return out
+
+
 def _segment_items(
     ca_pos: np.ndarray,
     o_pos: list[np.ndarray | None],
@@ -728,28 +770,37 @@ def _segment_items(
     py = canvas_h / 2 - scale * (verts[:, :, 1] - cy)
     pz = verts[:, :, 2]
     sw = style.outline_px
-    stroke = f' stroke="{outline}" stroke-width="{sw:.2f}"' if (outline and sw > 0) else ' stroke="none"'
+    draw_outline = bool(outline) and sw > 0
+    # A cap is one closed polygon whose boundary is the silhouette, so stroking
+    # it directly is correct.  Quads are not — see _silhouette_edges.
+    cap_stroke = f' stroke="{outline}" stroke-width="{sw:.2f}"' if draw_outline else ' stroke="none"'
     # Each spline sample belongs to the nearest residue, so per-residue colour
     # modes (rainbow, by-SS, by-B-factor) shade the right stretch of tape.
     sample_res = np.clip(np.rint(res_t).astype(int), 0, len(shaders) - 1)
 
     nxt = np.roll(np.arange(_PROFILE_N), -1)
+    # Screen-space signed area per quad; negative faces the viewer.  Computed up
+    # front because it is needed twice: back-face culling and silhouette edges.
+    _ax = px[:-1, nxt] - px[:-1, :]
+    _ay = py[:-1, nxt] - py[:-1, :]
+    _bx = px[1:, :] - px[:-1, :]
+    _by = py[1:, :] - py[:-1, :]
+    front = (_ax * _by - _ay * _bx) < 0.0  # (m - 1, _PROFILE_N)
+
     for i in range(m - 1):
         for j in range(_PROFILE_N):
+            if not front[i, j]:
+                continue  # back face of a closed tube — culled
             k = nxt[j]
             zq = (pz[i, j] + pz[i, k] + pz[i + 1, k] + pz[i + 1, j]) * 0.25
-            # Face normal from the projected winding: positive screen-space
-            # area means the face points toward the viewer.  Cheaper than a
-            # 3-D cross product and it is exactly the back-face test we want.
-            ax, ay = px[i, k] - px[i, j], py[i, k] - py[i, j]
-            bx, by = px[i + 1, j] - px[i, j], py[i + 1, j] - py[i, j]
-            if ax * by - ay * bx >= 0.0:
-                continue  # back face of a closed tube — culled
             e1 = verts[i, k] - verts[i, j]
             e2 = verts[i + 1, j] - verts[i, j]
             fn = np.cross(e1, e2)
             fl = np.linalg.norm(fn)
-            lam = 0.5 if fl <= _EPS else abs(float(np.dot(fn / fl, _LIGHT_DIR)))
+            # True Lambert, not |Lambert|: the winding is consistently outward,
+            # so faces turned from the light belong in shadow.  abs() lit the
+            # tape's thin edge faces as brightly as its top.
+            lam = 0.5 if fl <= _EPS else max(0.0, float(np.dot(fn / fl, _LIGHT_DIR)))
             lam = _SHADE_FLOOR + (1.0 - _SHADE_FLOOR) * lam
             fog = _fog_at(zq, fog_enabled, fog_strength, z_front, z_range)
             fill = shaders[sample_res[i]].shade(lam, fog)
@@ -757,16 +808,27 @@ def _segment_items(
                 f"{px[i, j]:.1f},{py[i, j]:.1f} {px[i, k]:.1f},{py[i, k]:.1f} "
                 f"{px[i + 1, k]:.1f},{py[i + 1, k]:.1f} {px[i + 1, j]:.1f},{py[i + 1, j]:.1f}"
             )
-            items.append((float(zq), [f'  <polygon points="{pts}" fill="{fill}"{stroke}/>']))
+            item = [f'  <polygon points="{pts}" fill="{fill}"/>']
+            if draw_outline:
+                # Same item, after the polygon: over its own quad, still under
+                # anything the z-order puts in front.
+                item.extend(_silhouette_edges(px, py, front, i, j, m, outline or "", sw))
+            items.append((float(zq), item))
 
     # --- 6. end caps so open segment ends are not hollow -------------------
+    view_z = np.array([0.0, 0.0, 1.0])
     for i, sgn in ((0, -1.0), (m - 1, 1.0)):
-        if float(np.dot(tangents[i], np.array([0.0, 0.0, 1.0]))) * sgn <= 0.0:
+        cap_n = tangents[i] * sgn
+        if float(np.dot(cap_n, view_z)) <= 0.0:
             continue
         pts = " ".join(f"{px[i, j]:.1f},{py[i, j]:.1f}" for j in range(_PROFILE_N))
         zc = float(pz[i].mean())
         fog = _fog_at(zc, fog_enabled, fog_strength, z_front, z_range)
-        items.append((zc, [f'  <polygon points="{pts}" fill="{shaders[sample_res[i]].shade(0.5, fog)}"{stroke}/>']))
+        # Shaded like any other face; a flat base colour reads as unlit against
+        # the surrounding Lambert range.
+        cap_lam = _SHADE_FLOOR + (1.0 - _SHADE_FLOOR) * max(0.0, float(np.dot(cap_n, _LIGHT_DIR)))
+        fill = shaders[sample_res[i]].shade(cap_lam, fog)
+        items.append((zc, [f'  <polygon points="{pts}" fill="{fill}"{cap_stroke}/>']))
 
     return items
 
@@ -878,6 +940,24 @@ def bfactor_range(protein_data: "ProteinData | ProteinSemantics", exclude: set[s
     if not vals or max(vals) - min(vals) <= _EPS:
         return None
     return min(vals), max(vals)
+
+
+def excluded_atom_indices(protein_data: "ProteinData | ProteinSemantics", exclude_chains: Iterable[str]) -> set[int]:
+    """Every atom of an excluded chain — polymer residues and heteroatoms alike.
+
+    Keyed off the requested chain IDs rather than ``protein_data.chains``: a
+    chain with fewer than two peptide residues is dropped from ``chains``
+    entirely, so a ligand-only chain would otherwise be silently unexcludable.
+    """
+    out: set[int] = set()
+    het_chains = getattr(protein_data, "het_chains", {}) or {}
+    for cid in exclude_chains:
+        chain = protein_data.chains.get(cid)
+        if chain is not None:
+            for res in chain.residues:
+                out.update(res.atom_indices)
+        out.update(het_chains.get(cid, ()))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1028,8 +1108,10 @@ def ribbon_svg_items(
     emitted at *quad* granularity, which is what allows a helix to occlude its
     own turns.
     """
-    chain_ids = [cid for cid in protein_data.chains.keys() if cid not in cfg.exclude_chains]
-    chain_colors = assign_chain_colors(cfg, chain_ids, style=cfg.protein_style)
+    chain_ids = [cid for cid in protein_data.chains if cid not in cfg.exclude_chains]
+    # Allocate over every chain, then filter: excluding one must not renumber
+    # the rest, or the same chain changes colour between figures in a series.
+    chain_colors = assign_chain_colors(cfg, list(protein_data.chains), style=cfg.protein_style)
     half_ribbon = cfg.ribbon_width / 2.0
     loop_half = cfg.loop_width / 2.0
     style = ribbon_style_profile(cfg.protein_style)
@@ -1107,8 +1189,10 @@ def trace_svg_items(
     Sweeps the same round coil section along the raw trace; no secondary
     structure is claimed.
     """
-    chain_ids = [cid for cid in protein_data.chains.keys() if cid not in cfg.exclude_chains]
-    chain_colors = assign_chain_colors(cfg, chain_ids, style=cfg.protein_style)
+    chain_ids = [cid for cid in protein_data.chains if cid not in cfg.exclude_chains]
+    # Allocate over every chain, then filter: excluding one must not renumber
+    # the rest, or the same chain changes colour between figures in a series.
+    chain_colors = assign_chain_colors(cfg, list(protein_data.chains), style=cfg.protein_style)
     style = ribbon_style_profile(cfg.protein_style)
     loop_half = cfg.loop_width / 2.0
 

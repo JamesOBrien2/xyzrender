@@ -121,6 +121,13 @@ _TWO_CHAIN_PDB = dedent("""\
 """)
 
 
+# A ligand belonging to chain B, appended to _TWO_CHAIN_PDB.
+_LIGAND_ON_B = dedent("""\
+    HETATM   17  C1  LIG B 101      20.000  20.000   0.000  1.00  0.00           C
+    HETATM   18  O1  LIG B 101      21.000  20.000   0.000  1.00  0.00           O
+""")
+
+
 @pytest.fixture
 def helix_pdb(tmp_path):
     p = tmp_path / "helix.pdb"
@@ -776,7 +783,9 @@ def test_ribbon_emits_per_quad_items(helix_pdb):
     """
     items = _ribbon_items(helix_pdb)
     assert len(items) > 10
-    assert all(len(lines) == 1 for _, lines in items)
+    # One quad per item; silhouette strokes ride along in the same item so they
+    # paint over their own quad but under anything in front of it.
+    assert all(sum("<polygon" in ln for ln in lines) == 1 for _, lines in items)
     assert all("<polygon" in lines[0] for _, lines in items)
 
 
@@ -797,6 +806,44 @@ def test_ribbon_quads_are_individually_shaded(helix_pdb):
         if m
     }
     assert len(fills) >= 3
+
+
+def test_outline_strokes_the_silhouette_not_the_mesh(helix_pdb):
+    """Outlines follow the surface boundary, not every interior quad edge.
+
+    Stroking the quads themselves made --protein illustration render as a
+    wireframe dump of the swept mesh.
+    """
+    items = _ribbon_items(helix_pdb, protein_style="illustration")
+    quads = sum(sum("<polygon" in ln for ln in lines) for _, lines in items)
+    strokes = sum(sum("<line" in ln for ln in lines) for _, lines in items)
+    assert strokes > 0
+    # A wireframe would stroke all four edges of every quad.
+    assert strokes < 2 * quads
+
+
+def test_gloss_outlines_the_ribbon(helix_pdb):
+    """The default style carries a hairline contour, not just illustration."""
+    items = _ribbon_items(helix_pdb, protein_style="gloss")
+    assert any("<line" in ln for _, lines in items for ln in lines)
+
+
+def test_ribbon_shading_reaches_both_ends_of_the_ramp(helix_pdb):
+    """Shadowed faces must actually darken, or overlapping strands merge."""
+    import re
+
+    def lum(hex_str):
+        r, g, b = (int(hex_str[i : i + 2], 16) / 255 for i in (1, 3, 5))
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    fills = [
+        m.group(1)
+        for _, lines in _ribbon_items(helix_pdb)
+        for m in [re.search(r'fill="(#[0-9a-fA-F]{6})"', lines[0])]
+        if m
+    ]
+    lums = [lum(f) for f in fills]
+    assert max(lums) - min(lums) > 0.25
 
 
 def test_ribbon_emits_no_gradient_defs(helix_pdb):
@@ -840,6 +887,34 @@ def test_exclude_chain_removes_its_geometry(two_chain_pdb):
     svg_all = str(render(load(two_chain_pdb), **kw))
     svg_excl = str(render(load(two_chain_pdb), exclude_chains="B", **kw))
     assert svg_excl.count("<polygon") < svg_all.count("<polygon")
+
+
+def test_exclude_chain_removes_its_ligand(tmp_path):
+    """A chain's heteroatoms go with its ribbon, not float on alone.
+
+    Ligand/water/ion indices carry no chain of their own, so exclusion has to
+    reach them through ProteinSemantics.het_chains.
+    """
+    p = tmp_path / "two_chain_lig.pdb"
+    p.write_text(_TWO_CHAIN_PDB.replace("END\n", "") + _LIGAND_ON_B + "END\n")
+    mol = load(p)
+    kw = {"protein": True, "orient": False}
+    assert str(render(mol, **kw)).count("<circle") == 2  # the two LIG atoms
+    assert str(render(mol, exclude_chains="B", **kw)).count("<circle") == 0
+
+
+def test_exclude_chain_does_not_recolour_the_others(two_chain_pdb):
+    """Chain A keeps its colour whether or not B is excluded."""
+    import re
+
+    kw = {"protein": True, "orient": False}
+    mol = load(two_chain_pdb)
+
+    def fills(svg):
+        return set(re.findall(r'<polygon[^>]*fill="(#[0-9a-fA-F]{6})"', svg))
+
+    # B's palette slot must not shift down to A when B is dropped.
+    assert fills(str(render(mol, exclude_chains="B", **kw))) <= fills(str(render(mol, **kw)))
 
 
 def test_named_styles_render(helix_pdb):
