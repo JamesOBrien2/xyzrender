@@ -287,42 +287,6 @@ def test_ribbon_helix_produces_polygons(helix_pdb):
     assert "<polygon" in all_svg
 
 
-def test_ribbon_helix_is_solid_strip_by_default(helix_pdb):
-    """Default protein style renders helix runs as near-solid strip polygons."""
-    import numpy as np
-
-    from xyzrender.ribbon import ribbon_svg_items
-    from xyzrender.types import RenderConfig
-
-    mol = load(helix_pdb)
-    pd = mol.protein_data
-    assert pd is not None
-    cfg = RenderConfig(protein=True)
-    pos = np.array([mol.graph.nodes[i]["position"] for i in mol.graph.nodes()])
-
-    items = ribbon_svg_items(pd, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
-    all_svg = " ".join(line for _, lines in items for line in lines)
-    poly_count = all_svg.count("<polygon")
-    assert poly_count <= 2
-
-
-def test_ribbon_surface_panels_are_fill_only(helix_pdb):
-    """Ribbon sweeps should remain near-solid (no per-facet panel explosion)."""
-    import numpy as np
-
-    from xyzrender.ribbon import ribbon_svg_items
-    from xyzrender.types import RenderConfig
-
-    mol = load(helix_pdb)
-    cfg = RenderConfig(protein=True)
-    pos = np.array([mol.graph.nodes[i]["position"] for i in mol.graph.nodes()])
-    pd = _require_protein_data(mol.protein_data)
-    items = ribbon_svg_items(pd, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
-    all_svg = " ".join(line for _, lines in items for line in lines)
-
-    assert all_svg.count("<polygon") <= 3
-
-
 def test_adaptive_spline_steps_is_deterministic():
     """Internal adaptive tessellation should choose stable step counts."""
     import numpy as np
@@ -340,14 +304,6 @@ def test_adaptive_spline_steps_is_deterministic():
     assert s1 >= s3
 
 
-def test_ribbon_default_width_is_thicker():
-    """Protein ribbon defaults keep the tuned width target."""
-    from xyzrender.types import RenderConfig
-
-    cfg = RenderConfig()
-    assert cfg.ribbon_width == pytest.approx(2.2)
-
-
 def test_ribbon_sheet_produces_polygons(sheet_pdb):
     """Sheet segments produce polygon elements (including arrowhead)."""
     import numpy as np
@@ -362,166 +318,6 @@ def test_ribbon_sheet_produces_polygons(sheet_pdb):
     items = ribbon_svg_items(pd, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
     all_svg = " ".join(line for _, lines in items for line in lines)
     assert "<polygon" in all_svg
-
-
-def test_ribbon_sheet_has_reduced_panel_count(sheet_pdb):
-    """Sheet sweeps should avoid excessive panelization/striping."""
-    import numpy as np
-
-    from xyzrender.ribbon import ribbon_svg_items
-    from xyzrender.types import RenderConfig
-
-    mol = load(sheet_pdb)
-    cfg = RenderConfig(protein=True)
-    pos = np.array([mol.graph.nodes[i]["position"] for i in mol.graph.nodes()])
-    pd = _require_protein_data(mol.protein_data)
-    items = ribbon_svg_items(pd, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
-    all_svg = " ".join(line for _, lines in items for line in lines)
-    poly_count = all_svg.count("<polygon")
-    assert poly_count <= 12
-
-
-def test_ribbon_styles_both_use_solid_helix_strips(helix_pdb):
-    """Both gloss and illustration styles should avoid faceted helix panels."""
-    import numpy as np
-
-    from xyzrender.ribbon import ribbon_svg_items
-    from xyzrender.types import RenderConfig
-
-    mol = load(helix_pdb)
-    pos = np.array([mol.graph.nodes[i]["position"] for i in mol.graph.nodes()])
-    pd = _require_protein_data(mol.protein_data)
-    gloss_items = ribbon_svg_items(pd, RenderConfig(protein=True), pos, 50.0, 0.0, 0.0, 800, 800)
-    illustration_items = ribbon_svg_items(
-        pd,
-        RenderConfig(protein=True, protein_style="illustration"),
-        pos,
-        50.0,
-        0.0,
-        0.0,
-        800,
-        800,
-    )
-    gloss_svg = " ".join(line for _, lines in gloss_items for line in lines)
-    illustration_svg = " ".join(line for _, lines in illustration_items for line in lines)
-    assert gloss_svg.count("<polygon") <= 2
-    assert illustration_svg.count("<polygon") <= 2
-
-
-def test_ribbon_loop_produces_path():
-    """Loop regions produce <path> elements."""
-    import numpy as np
-
-    from xyzrender.ribbon import ribbon_svg_items
-    from xyzrender.types import RenderConfig
-
-    # ala_phe_ala has no HELIX/SHEET → all coil
-    mol = load(STRUCTURES / "ala_phe_ala.pdb")
-    pd = mol.protein_data
-    if pd is None:
-        pytest.skip("ala_phe_ala has no chain info")
-    cfg = RenderConfig(protein=True)
-    pos = np.array([mol.graph.nodes[i]["position"] for i in mol.graph.nodes()])
-
-    items = ribbon_svg_items(pd, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
-    all_svg = " ".join(line for _, lines in items for line in lines)
-    assert "<path" in all_svg
-
-
-def test_loop_items_use_single_stroke_segments():
-    """Loop connectors should render as one darker stroke (not dual-stroke tubes)."""
-    import numpy as np
-
-    from xyzrender.ribbon import _loop_items, ribbon_style_profile
-
-    ca_pos = np.array(
-        [
-            [0.0, 0.0, 0.0],
-            [1.5, 0.2, 0.0],
-            [3.0, 0.0, 0.0],
-        ],
-        dtype=float,
-    )
-    style = ribbon_style_profile("illustration")
-    items = _loop_items(
-        ca_pos,
-        "#7aa9b2",
-        stroke_w=4.0,
-        style=style,
-        scale=80.0,
-        cx=0.0,
-        cy=0.0,
-        canvas_w=800.0,
-        canvas_h=800.0,
-    )
-    assert items
-    assert all(len(lines) == 1 for _, lines in items)
-
-
-def test_ribbon_ss_transitions_are_continuous():
-    """Single-residue H/C/H transitions still emit connector geometry."""
-    import numpy as np
-
-    from xyzrender.ribbon import ribbon_svg_items
-    from xyzrender.types import RenderConfig
-
-    # Residue 1 (H), 2 (C), 3 (H): old segmentation would drop all runs
-    # because each run length is 1. Continuity-aware rendering should still
-    # draw transition connector quads.
-    pd = ProteinData(
-        chains={
-            "A": ChainData(
-                chain_id="A",
-                residues=[
-                    ResidueData("ALA", 1, "A", [0, 3], ca_index=0, c_index=None, o_index=3, n_index=None, ss_type="H"),
-                    ResidueData("GLY", 2, "A", [1, 4], ca_index=1, c_index=None, o_index=4, n_index=None, ss_type="C"),
-                    ResidueData("SER", 3, "A", [2, 5], ca_index=2, c_index=None, o_index=5, n_index=None, ss_type="H"),
-                ],
-            )
-        },
-        hetatm_indices=set(),
-        backbone_indices={0, 1, 2, 3, 4, 5},
-        sidechain_indices=set(),
-        helix_spans=[],
-        sheet_spans=[],
-        ligand_indices=set(),
-        water_indices=set(),
-        ion_indices=set(),
-    )
-    pos = np.array(
-        [
-            [0.0, 0.0, 0.0],  # CA1
-            [1.5, 0.0, 0.0],  # CA2
-            [3.0, 0.0, 0.0],  # CA3
-            [0.0, 0.8, 0.0],  # O1
-            [1.5, 0.8, 0.0],  # O2
-            [3.0, 0.8, 0.0],  # O3
-        ],
-        dtype=float,
-    )
-    cfg = RenderConfig(protein=True)
-    items = ribbon_svg_items(pd, cfg, pos, 80.0, 0.0, 0.0, 800, 800)
-    all_svg = " ".join(line for _, lines in items for line in lines)
-    assert "<polygon" in all_svg
-    assert 'stroke="none"' not in all_svg
-
-
-def test_sheet_arrowheads_have_contour_strokes(sheet_pdb):
-    """Sheet arrowhead triangles should include contour stroke for consistency."""
-    import numpy as np
-
-    from xyzrender.ribbon import ribbon_svg_items
-    from xyzrender.types import RenderConfig
-
-    mol = load(sheet_pdb)
-    cfg = RenderConfig(protein=True)
-    pos = np.array([mol.graph.nodes[i]["position"] for i in mol.graph.nodes()])
-
-    pd = _require_protein_data(mol.protein_data)
-    items = ribbon_svg_items(pd, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
-    triangle_polys = [line for _, lines in items for line in lines if "<polygon" in line and line.count(",") == 3]
-    assert triangle_polys
-    assert all('stroke="none"' not in line for line in triangle_polys)
 
 
 def test_ribbon_two_chains_distinct_colors(two_chain_pdb):
@@ -606,78 +402,12 @@ def test_ribbon_polygons_in_svg(helix_pdb):
     assert "<polygon" in svg
 
 
-def test_protein_chain_color_in_svg(two_chain_pdb):
-    """Explicit chain colour is wired into the ribbon gradient for the correct chain."""
-    from xyzrender.colors import resolve_color
-
-    mol = load(two_chain_pdb)
-    svg = str(render(mol, protein=True, chain_colors={"A": "steelblue"}, orient=False))
-    # Ribbon gradients are keyed by chain colour hex in helix/sheet ids.
-    hex_color = resolve_color("steelblue")[1:]  # strip '#'
-    assert f"rg_h_{hex_color}" in svg
-    assert f"rg_e_{hex_color}" in svg
-
-
-def test_protein_helix_gradient_refs_are_valid(helix_pdb):
-    """Helix surfaces should reference rg_h_* gradients (never rg_*)."""
-    import re
-
-    mol = load(helix_pdb)
-    svg = str(render(mol, protein=True, orient=False))
-    assert "rg_h_" in svg
-    assert re.search(r"url\(#x\d+rg_h_[0-9A-Fa-f]{6}\)", svg) is not None
-    assert re.search(r"url\(#x\d+rg_[0-9A-Fa-f]{6}\)", svg) is None
-
-
-@pytest.mark.parametrize("style", ["illustration", "gloss"])
-def test_protein_named_styles_render_with_ribbon_gradients(helix_pdb, style):
-    """Supported named styles should emit ribbon gradient defs."""
-    mol = load(helix_pdb)
-    svg = str(render(mol, protein=style, orient=False))
-    assert "rg_h_" in svg
-    assert "rg_e_" in svg
-
-
-def test_protein_gloss_style_explicit_string(helix_pdb):
-    """protein='gloss' remains equivalent to protein=True behavior."""
-    import re
-
-    mol = load(helix_pdb)
-    svg = str(render(mol, protein="gloss", orient=False))
-    assert "rg_h_" in svg
-    assert re.search(r"url\(#x\d+rg_h_[0-9A-Fa-f]{6}\)", svg) is not None
-
-
 @pytest.mark.parametrize("style", ["cartoon", "plastic", "matte", "pymol", "illustrative"])
 def test_removed_protein_styles_raise(helix_pdb, style):
     """Removed legacy styles should fail fast with a validation error."""
     mol = load(helix_pdb)
     with pytest.raises(ValueError, match="unknown style"):
         render(mol, protein=style, orient=False)
-
-
-def test_illustration_profile_is_slimmer_than_gloss():
-    """Illustration style should be materially slimmer than gloss defaults."""
-    from xyzrender.ribbon import ribbon_style_profile
-
-    il = ribbon_style_profile("illustration")
-    gl = ribbon_style_profile("gloss")
-    assert il.ribbon_scale / gl.ribbon_scale <= 0.70
-    assert il.ribbon_scale / gl.ribbon_scale >= 0.50
-
-
-def test_loop_width_ratio_target_locked():
-    """Illustration defaults keep loop tube width at ~45% of local ribbon width."""
-    from xyzrender.ribbon import _LOOP_WIDTH_RATIO
-
-    assert _LOOP_WIDTH_RATIO == pytest.approx(0.45)
-
-
-def test_illustration_style_uses_round_loop_paths(two_chain_pdb):
-    """Illustration style should render coil runs as rounded tube paths."""
-    mol = load(two_chain_pdb)
-    svg = str(render(mol, protein="illustration", orient=False))
-    assert "<path" in svg
 
 
 def test_protein_gloss_respects_transparent_background(helix_pdb):
@@ -693,23 +423,6 @@ def test_protein_invalid_style_raises(helix_pdb):
     mol = load(helix_pdb)
     with pytest.raises(ValueError, match="unknown style"):
         render(mol, protein="not-a-style", orient=False)
-
-
-def test_protein_exclude_chain_removes_chain_gradient(two_chain_pdb):
-    """Excluded chains should not emit ribbon gradient defs for that chain."""
-    mol = load(two_chain_pdb)
-    svg_all = str(render(mol, protein=True, chain_colors={"A": "steelblue", "B": "red"}, orient=False))
-    svg_excl = str(
-        render(
-            mol,
-            protein=True,
-            chain_colors={"A": "steelblue", "B": "red"},
-            exclude_chains="B",
-            orient=False,
-        )
-    )
-    assert "rg_h_ff0000" in svg_all
-    assert "rg_h_ff0000" not in svg_excl
 
 
 def test_sidechain_flag(helix_pdb):
@@ -952,3 +665,254 @@ def test_ss_geometry_inference_accuracy_floor(tmp_path):
     assert recall["H"] >= 0.92, f"helix recall regressed to {recall['H']:.1%}"
     assert recall["E"] >= 0.94, f"sheet recall regressed to {recall['E']:.1%}"
     assert recall["C"] >= 0.63, f"coil recall regressed to {recall['C']:.1%}"
+
+
+# ---------------------------------------------------------------------------
+# Swept-cartoon geometry contract
+#
+# These replace an earlier suite that asserted the retired implementation's
+# artifacts: whole-run <polygon> strips (`poly_count <= 2`), stroked <path>
+# loops, and `rg_h_*` / `rg_e_*` gradient ids.  The cartoon is now a swept
+# surface emitted one depth-sorted quad at a time with per-quad Lambert
+# shading, so those assertions described bugs rather than requirements.
+# ---------------------------------------------------------------------------
+
+
+def _ribbon_items(pdb, cfg=None, **cfg_kw):
+    import numpy as np
+
+    from xyzrender.ribbon import ribbon_svg_items
+    from xyzrender.types import RenderConfig
+
+    mol = load(pdb)
+    pd = _require_protein_data(mol.protein_data)
+    cfg = cfg or RenderConfig(protein=True, **cfg_kw)
+    pos = np.array([mol.graph.nodes[i]["position"] for i in mol.graph.nodes()])
+    return ribbon_svg_items(pd, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
+
+
+def test_ribbon_emits_per_quad_items(helix_pdb):
+    """Depth granularity is per quad, not per secondary-structure run.
+
+    One item per run was the root cause of helices painting as flat
+    self-overlapping pancakes: a whole helix sorted at a single centroid z
+    cannot occlude its own turns.
+    """
+    items = _ribbon_items(helix_pdb)
+    assert len(items) > 10
+    assert all(len(lines) == 1 for _, lines in items)
+    assert all("<polygon" in lines[0] for _, lines in items)
+
+
+def test_ribbon_items_are_depth_sorted(helix_pdb):
+    """Items ascend in z so the renderer's drain loop interleaves correctly."""
+    zs = [z for z, _ in _ribbon_items(helix_pdb)]
+    assert zs == sorted(zs)
+
+
+def test_ribbon_quads_are_individually_shaded(helix_pdb):
+    """Per-quad normals must yield a range of fills, not one flat colour."""
+    import re
+
+    fills = {
+        m.group(1)
+        for _, lines in _ribbon_items(helix_pdb)
+        for m in [re.search(r'fill="(#[0-9a-fA-F]{6})"', lines[0])]
+        if m
+    }
+    assert len(fills) >= 3
+
+
+def test_ribbon_emits_no_gradient_defs(helix_pdb):
+    """Shading is baked into solid fills; no <linearGradient> is needed.
+
+    The old objectBoundingBox gradients ramped across each polygon's screen
+    bounding box rather than across the ribbon's local width.
+    """
+    from xyzrender.ribbon import ribbon_gradient_defs, ribbon_style_uses_gradients
+
+    assert ribbon_gradient_defs({"A": "#4682b4"}) == []
+    assert ribbon_style_uses_gradients("gloss") is False
+    svg = str(render(load(helix_pdb), protein=True, orient=False))
+    assert "rg_h_" not in svg
+    assert "rg_e_" not in svg
+
+
+def test_ribbon_default_width_matches_helix_pitch():
+    """Default tape width is near the ~5.4 A helix rise, so turns nearly close up."""
+    from xyzrender.types import RenderConfig
+
+    assert RenderConfig().ribbon_width == pytest.approx(4.5)
+
+
+def test_chain_color_reaches_the_ribbon(two_chain_pdb):
+    """An explicit chain colour must appear in that chain's quad fills."""
+    from xyzrender.colors import Color
+
+    svg = str(render(load(two_chain_pdb), protein=True, chain_colors={"A": "steelblue"}, orient=False))
+    base = Color.from_str("steelblue")
+    # Fills are Lambert-tinted, so look for the hue rather than an exact hex.
+    assert any(
+        abs(Color.from_hex(m).to_hls()[0] - base.to_hls()[0]) < 0.03
+        for m in __import__("re").findall(r'fill="(#[0-9a-fA-F]{6})"', svg)
+    )
+
+
+def test_exclude_chain_removes_its_geometry(two_chain_pdb):
+    """Excluding a chain drops its quads (and shrinks the emitted SVG)."""
+    kw = {"protein": True, "chain_colors": {"A": "steelblue", "B": "red"}, "orient": False}
+    svg_all = str(render(load(two_chain_pdb), **kw))
+    svg_excl = str(render(load(two_chain_pdb), exclude_chains="B", **kw))
+    assert svg_excl.count("<polygon") < svg_all.count("<polygon")
+
+
+def test_named_styles_render(helix_pdb):
+    """Both named styles still produce cartoon geometry."""
+    for style in ("gloss", "illustration"):
+        svg = str(render(load(helix_pdb), protein=style, orient=False))
+        assert svg.count("<polygon") > 5
+
+
+def test_illustration_style_is_slimmer_and_outlined():
+    """Illustration is the flatter, contoured variant of the same geometry."""
+    from xyzrender.ribbon import ribbon_style_profile
+
+    il, gl = ribbon_style_profile("illustration"), ribbon_style_profile("gloss")
+    assert il.width_scale < gl.width_scale
+    assert il.thickness_scale < gl.thickness_scale
+    assert il.shade_gain < gl.shade_gain
+    assert il.outline_px > 0
+
+
+def test_ss_transition_is_continuous():
+    """A single-residue H/C/H alternation still sweeps one connected surface.
+
+    The old code emitted an unsplined straight quad at a third width across
+    every SS junction, which read as a notch.
+    """
+    import numpy as np
+
+    from xyzrender.ribbon import ribbon_svg_items
+    from xyzrender.types import RenderConfig
+
+    pd = ProteinData(
+        chains={
+            "A": ChainData(
+                chain_id="A",
+                residues=[
+                    ResidueData("ALA", 1, "A", [0, 3], ca_index=0, c_index=None, o_index=3, n_index=None, ss_type="H"),
+                    ResidueData("GLY", 2, "A", [1, 4], ca_index=1, c_index=None, o_index=4, n_index=None, ss_type="C"),
+                    ResidueData("SER", 3, "A", [2, 5], ca_index=2, c_index=None, o_index=5, n_index=None, ss_type="H"),
+                ],
+            )
+        },
+        hetatm_indices=set(),
+        backbone_indices={0, 1, 2, 3, 4, 5},
+        sidechain_indices=set(),
+        helix_spans=[],
+        sheet_spans=[],
+    )
+    pos = np.array(
+        [[0.0, 0, 0], [3.8, 0, 0], [7.6, 0, 0], [0.5, 1.2, 0], [4.3, 1.2, 0], [8.1, 1.2, 0]],
+        dtype=float,
+    )
+    items = ribbon_svg_items(pd, RenderConfig(protein=True), pos, 50.0, 0.0, 0.0, 800, 800)
+    assert len(items) > 5
+
+
+def test_frame_is_flip_corrected():
+    """Successive ribbon normals never invert.
+
+    Carbonyls alternate by ~180 degrees along a strand; without sign
+    propagation the tape would flip on every residue.
+    """
+    import numpy as np
+
+    from xyzrender.ribbon import _central_tangents, _frame_normals
+
+    n = 12
+    ca = np.stack([np.arange(n) * 3.8, np.zeros(n), np.zeros(n)], axis=1).astype(float)
+    # Alternating carbonyl directions, as in a real beta strand.
+    o = [ca[i] + np.array([0.0, 1.2 * (-1) ** i, 0.3]) for i in range(n)]
+    normals = _frame_normals(ca, o, _central_tangents(ca), ["E"] * n)
+    dots = np.einsum("ij,ij->i", normals[:-1], normals[1:])
+    assert bool((dots > 0).all()), f"frame flips at {np.where(dots <= 0)[0]}"
+
+
+def test_helix_frame_tracks_the_axis():
+    """On an ideal helix the tape's width runs along the helix axis.
+
+    This is the Carson-Bugg construction.  Using the curvature vector instead
+    (which points at the axis) makes the tape a fin spiralling around it.
+    """
+    import numpy as np
+
+    from xyzrender.ribbon import _central_tangents, _frame_normals
+
+    # Ideal alpha helix: r=2.3 A, rise 1.5 A/residue, 100 deg/residue.
+    n = 20
+    t = np.arange(n) * np.deg2rad(100.0)
+    ca = np.stack([2.3 * np.cos(t), 2.3 * np.sin(t), np.arange(n) * 1.5], axis=1)
+    # Carbonyl points roughly along +z (the axis) in a real helix.
+    o = [ca[i] + np.array([0.3 * np.cos(t[i]), 0.3 * np.sin(t[i]), 1.1]) for i in range(n)]
+    normals = _frame_normals(ca, o, _central_tangents(ca), ["H"] * n)
+    axis = np.array([0.0, 0.0, 1.0])
+    # Interior residues only; the ends have one-sided tangents.
+    align = np.abs(normals[3:-3] @ axis)
+    assert align.mean() > 0.5, f"mean |n . axis| = {align.mean():.2f}"
+
+
+def test_centripetal_spline_hits_control_points():
+    """The spline interpolates its control points (it is not an approximation)."""
+    import numpy as np
+
+    from xyzrender.ribbon import _catmull_rom_3d
+
+    pts = np.array([[0.0, 0, 0], [1.0, 2, 0], [3.0, 1, 1], [5.0, 3, 0]])
+    curve = _catmull_rom_3d(pts, steps=8)
+    for p in pts:
+        assert np.min(np.linalg.norm(curve - p, axis=1)) < 1e-6
+
+
+def test_centripetal_spline_does_not_overshoot():
+    """No cusp or overshoot at a tight turn, which uniform Catmull-Rom shows."""
+    import numpy as np
+
+    from xyzrender.ribbon import _catmull_rom_3d
+
+    # Hairpin: three nearly-coincident points then a sharp reversal.
+    pts = np.array([[0.0, 0, 0], [3.8, 0, 0], [4.2, 3.0, 0], [0.4, 3.2, 0]])
+    curve = _catmull_rom_3d(pts, steps=12)
+    lo, hi = pts.min(axis=0), pts.max(axis=0)
+    margin = 0.35 * float(np.linalg.norm(hi - lo))
+    assert (curve >= lo - margin).all()
+    assert (curve <= hi + margin).all()
+
+
+def test_strand_gets_an_arrowhead(sheet_pdb):
+    """A strand's tape widens to a flange then tapers, as one swept surface."""
+    import numpy as np
+
+    from xyzrender.ribbon import _sample_widths
+
+    ss = ["E"] * 8
+    res_t = np.linspace(0, 7, 60)
+    hw, _, _ = _sample_widths(ss, res_t, 2.0, 2.0, 0.4, 0.3, 0.3, 0.4)
+    body = hw[res_t <= 5.0].mean()
+    assert hw.max() > body * 1.5, "no flange"
+    assert hw[-1] < body * 0.5, "strand does not taper to a point"
+
+
+def test_short_strand_still_renders(tmp_path):
+    """A 2-residue SHEET record is legal PDB and must not be dropped.
+
+    The old code had _MIN_SHEET_RES=2 and made such a strand entirely
+    arrowhead; the taper now handles it as a short tapered strand.
+    """
+    import numpy as np
+
+    from xyzrender.ribbon import _sample_widths
+
+    hw, _, _ = _sample_widths(["E", "E"], np.linspace(0, 1, 16), 2.0, 2.0, 0.4, 0.3, 0.3, 0.4)
+    assert np.isfinite(hw).all()
+    assert hw.max() > 0

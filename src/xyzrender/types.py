@@ -539,8 +539,11 @@ class RenderConfig:
     protein: bool = False
     protein_style: str = "gloss"  # ribbon style profile (gloss or illustration)
     chain_colors: dict[str, str] | None = None  # chain_id → resolved hex; None = auto-palette
-    ribbon_width: float = 2.2  # Å — visual width of helix/sheet ribbon
-    loop_width: float = 0.8  # Å — loop-width cap; default rendering keeps loops narrower than ribbons
+    # Å — full width of the helix/sheet tape.  Helix turns are ~5.4 Å apart, so
+    # a tape near this width makes successive turns almost close up, which is
+    # what makes a cartoon helix read as a coiled solid rather than a thin strap.
+    ribbon_width: float = 4.5
+    loop_width: float = 0.9  # Å — full diameter of the round coil tube
     show_sidechain: bool = False  # show amino-acid side chains as sticks
     exclude_chains: set[str] = field(default_factory=set)  # chain IDs hidden in protein mode
     ligand_highlight: bool = False  # recolor ligand atoms/bonds in protein mode

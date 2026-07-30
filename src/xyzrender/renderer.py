@@ -260,7 +260,23 @@ def render_svg(
             hi = tip2d + np.array([label_half_w, label_h])
             extra_lo = np.minimum(extra_lo, lo) if extra_lo is not None else lo
             extra_hi = np.maximum(extra_hi, hi) if extra_hi is not None else hi
-    scale, cx, cy, canvas_w, canvas_h = _fit_canvas(pos, fit_radii, cfg, extra_lo=extra_lo, extra_hi=extra_hi)
+    # Chains excluded in protein mode are not drawn at all, so they must not
+    # be counted when fitting the canvas — otherwise the kept chains are
+    # squeezed into a corner of an image sized for the whole assembly.
+    # Backbone/sidechain atoms hidden by protein mode are deliberately still
+    # counted: the ribbon is drawn along them.
+    _fit_pos, _fit_r = pos, fit_radii
+    if cfg.protein and protein_data is not None and cfg.exclude_chains:
+        _drop: set[int] = set()
+        for _cid in cfg.exclude_chains:
+            _chain = protein_data.chains.get(_cid)
+            if _chain is not None:
+                for _res in _chain.residues:
+                    _drop.update(_res.atom_indices)
+        if _drop and len(_drop) < n:
+            _keep = np.array([i for i in range(n) if i not in _drop], dtype=int)
+            _fit_pos, _fit_r = pos[_keep], fit_radii[_keep]
+    scale, cx, cy, canvas_w, canvas_h = _fit_canvas(_fit_pos, _fit_r, cfg, extra_lo=extra_lo, extra_hi=extra_hi)
 
     # scale_ratio: encodes both molecule complexity AND canvas size so that
     # bond/label widths defined at _REF_CANVAS grow proportionally on larger canvases.
@@ -1013,30 +1029,32 @@ def render_svg(
     ribbon_items: list[tuple[float, list[str]]] = []
     ribbon_idx = 0
     if cfg.protein and protein_data is not None:
-        from xyzrender.ribbon import (
-            assign_chain_colors,
-            ribbon_gradient_defs,
-            ribbon_style_uses_gradients,
-            ribbon_svg_items,
-            trace_svg_items,
-        )
+        from xyzrender.ribbon import ribbon_svg_items, trace_svg_items
         from xyzrender.types import ProteinConfidence
 
-        if protein_data.confidence_tier == ProteinConfidence.TRACE_ONLY:
-            ribbon_items = trace_svg_items(protein_data, cfg, pos, scale, cx, cy, canvas_w, canvas_h)
-        elif protein_data.confidence_tier == ProteinConfidence.INSUFFICIENT:
+        # Cartoon shading is computed per quad and baked into solid fills, so
+        # no gradient defs are needed.  Fog is applied inside the module (as
+        # mo.py does) — without it the ribbon would stay fully saturated with
+        # depth while the co-rendered ligand sticks recede.
+        _emit = (
+            trace_svg_items if protein_data.confidence_tier == ProteinConfidence.TRACE_ONLY else ribbon_svg_items
+        )
+        if protein_data.confidence_tier == ProteinConfidence.INSUFFICIENT:
             ribbon_items = []
         else:
-            ribbon_items = ribbon_svg_items(protein_data, cfg, pos, scale, cx, cy, canvas_w, canvas_h)
-            # Emit gradient defs only for glossy ribbon shading.
-            if ribbon_style_uses_gradients(cfg.protein_style):
-                chain_ids = [cid for cid in protein_data.chains.keys() if cid not in cfg.exclude_chains]
-                chain_colors = assign_chain_colors(cfg, chain_ids, style=cfg.protein_style)
-                _ribbon_defs = ribbon_gradient_defs(chain_colors, style=cfg.protein_style)
-                if _ribbon_defs:
-                    svg.append("  <defs>")
-                    svg.extend(_ribbon_defs)
-                    svg.append("  </defs>")
+            ribbon_items = _emit(
+                protein_data,
+                cfg,
+                pos,
+                scale,
+                cx,
+                cy,
+                canvas_w,
+                canvas_h,
+                fog_enabled=bool(cfg.fog),
+                fog_strength=float(cfg.fog_strength),
+                fog_rgb=fog_rgb,
+            )
 
     def _drain_ribbon(next_z: float) -> None:
         nonlocal ribbon_idx

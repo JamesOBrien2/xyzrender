@@ -146,8 +146,10 @@ def test_graph_only_trace_fallback(tmp_path):
     mol = load(p)
     assert mol.protein_semantics is None  # no metadata extracted at load-time
     svg = str(render(mol, protein=True, orient=False, gradient=False, config="flat"))
-    # Trace fallback uses path strokes (not helix/sheet polygons).
-    assert "<path" in svg
+    # The trace fallback sweeps the same round coil section as a real cartoon
+    # coil, so it emits quad polygons rather than the stroked <path> the old
+    # implementation used.  No secondary structure is claimed either way.
+    assert svg.count("<polygon") > 5
 
 
 def test_cif_annotations_prevent_graph_only_fallback(tmp_path, monkeypatch):
