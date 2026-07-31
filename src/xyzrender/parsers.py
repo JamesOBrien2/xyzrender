@@ -455,6 +455,16 @@ def parse_mol2(path: str | Path) -> MolData:
 # ---------------------------------------------------------------------------
 
 
+def _is_placeholder_cryst1(a: float, b: float, c: float, alpha: float, beta: float, gamma: float) -> bool:
+    """Whether a CRYST1 record is the ``1 1 1 90 90 90 P 1`` no-cell sentinel.
+
+    The PDB spec mandates a CRYST1 record, so non-crystallographic entries
+    (cryo-EM, NMR, predicted models) carry a unit cell of 1 A.  Taking it
+    literally draws a sub-Angstrom cell box and axis triad over the structure.
+    """
+    return (a, b, c) == (1.0, 1.0, 1.0) and (alpha, beta, gamma) == (90.0, 90.0, 90.0)
+
+
 def _abc_angles_to_cell(a: float, b: float, c: float, alpha: float, beta: float, gamma: float) -> np.ndarray:
     """Convert unit-cell parameters to a (3, 3) row-vector matrix.
 
@@ -680,7 +690,8 @@ def parse_pdb(path: str | Path) -> MolData:
                 alpha = float(ln[33:40])
                 beta = float(ln[40:47])
                 gamma = float(ln[47:54])
-                pbc_cell = _abc_angles_to_cell(a, b, c, alpha, beta, gamma)
+                if not _is_placeholder_cryst1(a, b, c, alpha, beta, gamma):
+                    pbc_cell = _abc_angles_to_cell(a, b, c, alpha, beta, gamma)
             except (ValueError, IndexError):
                 pass
 

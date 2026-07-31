@@ -924,6 +924,34 @@ def test_exclude_chain_does_not_recolour_the_others(two_chain_pdb):
     assert fills(str(render(mol, exclude_chains="A", **kw))) != fills(str(render(mol, exclude_chains="B", **kw)))
 
 
+def test_lone_amino_acid_ligand_is_still_drawn(tmp_path):
+    """A single residue on its own chain must not vanish.
+
+    Backbone names are collected before the peptide test diverts a residue to
+    ligand, so its N/CA/C/O stayed in backbone_indices -- which the renderer
+    hides -- while its chain was too short to earn a ribbon.
+    """
+    p = tmp_path / "docked.pdb"
+    lig = "".join(
+        f"ATOM  {9 + i:>5} {name:^4} GLY L   1    {9.0 + i:>8.3f}{9.0:>8.3f}{0.0:>8.3f}"
+        f"{1.0:>6.2f}{0.0:>6.2f}          {elem:>2}\n"
+        for i, (name, elem) in enumerate([("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O")])
+    )
+    p.write_text(_TWO_CHAIN_PDB.replace("END\n", "") + lig + "END\n")
+    sem = load(p).protein_semantics
+    assert len(sem.ligand_indices) == 4
+    assert not (sem.ligand_indices & sem.backbone_indices)
+    assert str(render(load(p), protein=True, orient=False)).count("<circle") == 4
+
+
+def test_placeholder_cryst1_draws_no_cell():
+    """PDB mandates CRYST1, so non-crystallographic entries carry a 1 A sentinel."""
+    from xyzrender.parsers import parse_pdb
+
+    assert parse_pdb(STRUCTURES / "8UWL.pdb").pbc_cell is None
+    assert parse_pdb(STRUCTURES / "water_cryst.pdb").pbc_cell is not None
+
+
 def test_named_styles_render(helix_pdb):
     """Both named styles still produce cartoon geometry."""
     for style in ("gloss", "illustration"):
