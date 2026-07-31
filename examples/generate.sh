@@ -52,9 +52,11 @@ xyzrender "$DIR/ala_phe_ala.pdb" -o "$IMG/ala_phe_ala.svg"
 xyzrender --smi "C1CCCCC1" --hy -o "$IMG/cyclohexane_smi.svg"
 
 echo "=== Protein ribbon + ligand/NCI showcase ==="
-xyzrender "$DIR/8UWL.pdb" --protein gloss --no-orient -o "$IMG/protein_gloss.svg"
-xyzrender "$DIR/8UWL.pdb" --protein illustration --no-orient -o "$IMG/protein_illustration.svg"
-xyzrender "$DIR/8UWL.pdb" --protein --highlight-ligand --ligand-color "#ff9f45" --no-orient -o "$IMG/protein_highlight_ligand.svg"
+# One chain per figure: a 5-chain assembly is unreadable at README thumbnail
+# size, and the whole-assembly SVG is ~4.5 MB against ~1.5 MB for a chain.
+xyzrender "$DIR/8UWL.pdb" --protein gloss --exclude-chains "A,B,D,E" --no-orient -o "$IMG/protein_gloss.svg"
+xyzrender "$DIR/8UWL.pdb" --protein illustration --exclude-chains "A,B,D,E" --no-orient -o "$IMG/protein_illustration.svg"
+xyzrender "$DIR/8UWL.pdb" --protein --exclude-chains "B,C,D,E" --highlight-ligand --ligand-color "#ff9f45" --no-orient -o "$IMG/protein_highlight_ligand.svg"
 xyzrender "$DIR/protein_ligand.pdb" --protein --nci-ligand --no-orient -o "$IMG/protein_nci_ligand.svg"
 xyzrender "$DIR/protein_ligand.pdb" --protein --nci-ligand --nci-color teal --no-orient -o "$IMG/protein_nci_ligand_custom_color.svg"
 
