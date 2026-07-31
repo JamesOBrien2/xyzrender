@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from xyzrender.cli import _basename, _parse_pairs
+from xyzrender.protein_semantics import xyzgraph_protein_available
 
 STRUCTURES = Path(__file__).resolve().parent.parent / "examples" / "structures"
 _STRUCTURES = STRUCTURES  # alias: both spellings are used across this module
@@ -192,6 +193,10 @@ def test_cli_protein_removed_style_fails(monkeypatch):
         cli.main()
 
 
+@pytest.mark.skipif(
+    not xyzgraph_protein_available(),
+    reason="installed xyzgraph does not provide xyzgraph.protein",
+)
 def test_cli_accepts_the_cartoon_alias(monkeypatch, tmp_path):
     import sys
 
