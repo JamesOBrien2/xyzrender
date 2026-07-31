@@ -779,29 +779,38 @@ def _segment_items(
     sample_res = np.clip(np.rint(res_t).astype(int), 0, len(shaders) - 1)
 
     nxt = np.roll(np.arange(_PROFILE_N), -1)
-    # Screen-space signed area per quad; negative faces the viewer.  Computed up
-    # front because it is needed twice: back-face culling and silhouette edges.
+    # Everything per-quad is computed for all quads at once: np.cross and
+    # np.linalg.norm cost far more in call overhead than in arithmetic when
+    # handed single 3-vectors.  Shapes are (m - 1, _PROFILE_N[, 3]).
     _ax = px[:-1, nxt] - px[:-1, :]
     _ay = py[:-1, nxt] - py[:-1, :]
     _bx = px[1:, :] - px[:-1, :]
     _by = py[1:, :] - py[:-1, :]
-    front = (_ax * _by - _ay * _bx) < 0.0  # (m - 1, _PROFILE_N)
+    # Screen-space signed area; negative faces the viewer.  Needed twice:
+    # back-face culling and silhouette edges.
+    front = (_ax * _by - _ay * _bx) < 0.0
+
+    e1 = verts[:-1, nxt, :] - verts[:-1, :, :]
+    e2 = verts[1:, :, :] - verts[:-1, :, :]
+    fn = np.cross(e1, e2)
+    fl = np.linalg.norm(fn, axis=2)
+    ok = fl > _EPS
+    # True Lambert, not |Lambert|: the winding is consistently outward, so faces
+    # turned from the light belong in shadow.  abs() lit the tape's thin edge
+    # faces as brightly as its top.  Degenerate quads fall back to a flat 0.5.
+    lam_raw = np.einsum("ijk,k->ij", fn, _LIGHT_DIR) / np.where(ok, fl, 1.0)
+    lam_all = np.where(ok, np.maximum(lam_raw, 0.0), 0.5)
+    lam_all = _SHADE_FLOOR + (1.0 - _SHADE_FLOOR) * lam_all
+
+    zq_all = (pz[:-1, :] + pz[:-1, nxt] + pz[1:, nxt] + pz[1:, :]) * 0.25
 
     for i in range(m - 1):
         for j in range(_PROFILE_N):
             if not front[i, j]:
                 continue  # back face of a closed tube — culled
             k = nxt[j]
-            zq = (pz[i, j] + pz[i, k] + pz[i + 1, k] + pz[i + 1, j]) * 0.25
-            e1 = verts[i, k] - verts[i, j]
-            e2 = verts[i + 1, j] - verts[i, j]
-            fn = np.cross(e1, e2)
-            fl = np.linalg.norm(fn)
-            # True Lambert, not |Lambert|: the winding is consistently outward,
-            # so faces turned from the light belong in shadow.  abs() lit the
-            # tape's thin edge faces as brightly as its top.
-            lam = 0.5 if fl <= _EPS else max(0.0, float(np.dot(fn / fl, _LIGHT_DIR)))
-            lam = _SHADE_FLOOR + (1.0 - _SHADE_FLOOR) * lam
+            zq = zq_all[i, j]
+            lam = lam_all[i, j]
             fog = _fog_at(zq, fog_enabled, fog_strength, z_front, z_range)
             fill = shaders[sample_res[i]].shade(lam, fog)
             pts = (
