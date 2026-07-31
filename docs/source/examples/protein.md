@@ -20,6 +20,8 @@ Secondary structure comes from `HELIX`/`SHEET` records when the file has them, s
 
 xyzrender reports the tier it used on stderr, so a structure that renders as a bare tube tells you why.
 
+Inference is only needed when the file carries no `HELIX`/`SHEET` records, and it is weakest on small all-β folds, where tight turns between strands are extended enough to read as strand themselves. On a mixed α/β structure it agrees with the deposited records on ~86-90% of residues; on a compact all-β domain that can fall to ~60-70%. Files with SS records are unaffected — records always win.
+
 ## Styles
 
 `gloss` (the default) uses strong Lambert shading with a hairline contour. `illustration` is flatter with a heavier dark contour, for a textbook look. `cartoon` is accepted as an alias for `gloss`.
