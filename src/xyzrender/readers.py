@@ -339,6 +339,43 @@ def load_cube(
     return graph, cube
 
 
+def _rescue_hetatm_bonds(graph: "nx.Graph", data: object) -> None:
+    """Detect bonds for heteroatoms the file's CONECT records left bare.
+
+    A deposited structure ships CONECT for its own HETATM, so ``data.bonds`` is
+    non-empty and file connectivity wins -- but a ligand appended afterwards
+    (a docked pose) has no records and would draw as loose spheres.  Detection
+    runs on the heteroatom slice alone: ~2 ms, against 131 s for a whole protein.
+    """
+    pd = getattr(data, "protein_data", None)
+    het = sorted(getattr(pd, "hetatm_indices", ()) or ())
+    if not het or all(graph.degree(i) for i in het):
+        return
+
+    from xyzgraph import build_graph
+
+    atoms = getattr(data, "atoms", None)
+    if atoms is None:
+        return
+    sub = build_graph([atoms[i] for i in het], quick=True)
+    for u, v, attrs in sub.edges(data=True):
+        a, b = het[u], het[v]
+        if not graph.has_edge(a, b):
+            graph.add_edge(a, b, bond_order=attrs.get("bond_order", 1.0))
+
+
+def _isolated_atoms_are_drawn_as_ribbon(isolated: list[int], data: object) -> bool:
+    """Whether every bondless atom is backbone/sidechain, i.e. drawn as cartoon.
+
+    Those atoms never needed bonds; warning about them is noise on any protein.
+    """
+    pd = getattr(data, "protein_data", None)
+    if pd is None:
+        return False
+    covered = set(getattr(pd, "backbone_indices", ())) | set(getattr(pd, "sidechain_indices", ()))
+    return bool(covered) and all(i in covered for i in isolated)
+
+
 def graph_from_moldata(
     data: object,
     charge: int = 0,
@@ -379,14 +416,19 @@ def graph_from_moldata(
             graph.add_node(i, symbol=sym, position=pos)
         for i, j, order in data.bonds:
             graph.add_edge(i, j, bond_order=order)
-        isolated = sum(1 for n in graph.nodes if graph.degree(n) == 0)
-        if isolated > 0:
+        _rescue_hetatm_bonds(graph, data)
+        isolated = [n for n in graph.nodes if graph.degree(n) == 0]
+        if isolated and not _isolated_atoms_are_drawn_as_ribbon(isolated, data):
+            # Detection is O(n^2) -- 131 s on an 8.6k-atom protein -- so only
+            # suggest it where it would actually finish.
+            hint = " — use --rebuild to re-detect with xyzgraph" if graph.number_of_nodes() <= 2000 else ""
             logger.warning(
-                "%d/%d atoms have no bonds from file connectivity — use --rebuild to re-detect with xyzgraph",
-                isolated,
+                "%d/%d atoms have no bonds from file connectivity%s",
+                len(isolated),
                 graph.number_of_nodes(),
+                hint,
             )
-        else:
+        elif not isolated:
             logger.info(
                 "Graph from file connectivity: %d atoms, %d bonds",
                 graph.number_of_nodes(),

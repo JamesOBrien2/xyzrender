@@ -329,7 +329,7 @@ class ProteinData:
     sheet_spans: list[tuple[str, int, int]]  # (chain_id, start_seq, end_seq)
     ligand_indices: set[int] = field(default_factory=set)  # HETATM excl. water and ions
     water_indices: set[int] = field(default_factory=set)  # HOH, WAT, etc.
-    ion_indices: set[int] = field(default_factory=set)  # single-heavy-atom ions
+    ion_indices: set[int] = field(default_factory=set)  # ions and inorganic counter-ions (incl. SO4/PO4)
     confidence_tier: ProteinConfidence = ProteinConfidence.FULL_RIBBON
     confidence_reasons: list[str] = field(default_factory=list)
     provenance: list[str] = field(default_factory=list)

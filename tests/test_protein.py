@@ -952,6 +952,35 @@ def test_placeholder_cryst1_draws_no_cell():
     assert parse_pdb(STRUCTURES / "water_cryst.pdb").pbc_cell is not None
 
 
+def test_docked_ligand_without_conect_gets_bonds(tmp_path):
+    """A pose appended to a deposited structure has no CONECT of its own.
+
+    File connectivity wins whenever any CONECT record exists, so the ligand
+    would draw as loose spheres.  --rebuild fixes it but costs ~131 s on an
+    8.6k-atom protein; only the heteroatoms need re-detecting.
+    """
+    p = tmp_path / "docked.pdb"
+    lig = "".join(
+        f"HETATM{17 + i:>5} {'C%d' % (i + 1):^4} LIG A 101    "
+        f"{8.0 + 1.4 * i:>8.3f}{9.0:>8.3f}{0.0:>8.3f}{1.0:>6.2f}{0.0:>6.2f}           C\n"
+        for i in range(6)
+    )
+    # CONECT covering only the protein, as a deposited file would for its own HETATM
+    p.write_text(_TWO_CHAIN_PDB.replace("END\n", "") + lig + "CONECT    1    2\nCONECT    2    3\nEND\n")
+    mol = load(p)
+    lig_nodes = [n for n in mol.graph.nodes if n >= 16]
+    assert sum(mol.graph.degree(n) for n in lig_nodes) > 0
+
+
+def test_protein_load_does_not_warn_about_missing_bonds(caplog):
+    """Backbone atoms drawn as ribbon never needed bonds; the warning is noise."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="xyzrender.readers"):
+        load(STRUCTURES / "8UWL.pdb")
+    assert not [r for r in caplog.records if "no bonds from file" in r.message]
+
+
 def test_named_styles_render(helix_pdb):
     """Both named styles still produce cartoon geometry."""
     for style in ("gloss", "illustration"):
