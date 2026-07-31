@@ -950,7 +950,7 @@ def excluded_atom_indices(protein_data: "ProteinData | ProteinSemantics", exclud
     entirely, so a ligand-only chain would otherwise be silently unexcludable.
     """
     out: set[int] = set()
-    het_chains = getattr(protein_data, "het_chains", {}) or {}
+    het_chains = protein_data.het_chains
     for cid in exclude_chains:
         chain = protein_data.chains.get(cid)
         if chain is not None:

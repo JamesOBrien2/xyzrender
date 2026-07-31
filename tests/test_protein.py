@@ -904,7 +904,12 @@ def test_exclude_chain_removes_its_ligand(tmp_path):
 
 
 def test_exclude_chain_does_not_recolour_the_others(two_chain_pdb):
-    """Chain A keeps its colour whether or not B is excluded."""
+    """B keeps palette[1] when A is excluded, rather than sliding to palette[0].
+
+    Excluding the *first* chain is the discriminating case: filtering before
+    allocation renumbered everything after it, so the same chain changed colour
+    between an overview and a close-up.
+    """
     import re
 
     kw = {"protein": True, "orient": False}
@@ -913,8 +918,10 @@ def test_exclude_chain_does_not_recolour_the_others(two_chain_pdb):
     def fills(svg):
         return set(re.findall(r'<polygon[^>]*fill="(#[0-9a-fA-F]{6})"', svg))
 
-    # B's palette slot must not shift down to A when B is dropped.
-    assert fills(str(render(mol, exclude_chains="B", **kw))) <= fills(str(render(mol, **kw)))
+    # The fixture's chains are translated copies, so their shade sets differ
+    # only by base colour.  Filtering before allocation gave whichever chain
+    # survived palette[0], making these two renders identical.
+    assert fills(str(render(mol, exclude_chains="A", **kw))) != fills(str(render(mol, exclude_chains="B", **kw)))
 
 
 def test_named_styles_render(helix_pdb):
