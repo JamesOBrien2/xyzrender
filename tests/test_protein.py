@@ -121,6 +121,84 @@ _TWO_CHAIN_PDB = dedent("""\
 """)
 
 
+# A 10-residue helix (chain A) and a 7-residue strand (chain B), carved from
+# 8UWL so the backbone geometry is real.  Small enough for geometry tests
+# that need both SS types and two chains at once.
+_HELIX_SHEET_PDB = dedent("""\
+    HELIX    1   1 ALA A    1  LEU A   10  1                                   10
+    SHEET    1   S 1 PHE B   1  VAL B   7  0
+    ATOM      1  N   ALA A   1     142.038 174.939 188.223  1.00 30.00           N
+    ATOM      2  CA  ALA A   1     141.630 174.019 187.133  1.00 30.00           C
+    ATOM      3  C   ALA A   1     142.304 174.361 185.799  1.00 30.00           C
+    ATOM      4  O   ALA A   1     142.412 173.456 184.961  1.00 30.00           O
+    ATOM      5  N   LEU A   2     142.729 175.610 185.598  1.00 94.10           N
+    ATOM      6  CA  LEU A   2     143.365 176.042 184.322  1.00 94.10           C
+    ATOM      7  C   LEU A   2     144.622 175.209 184.066  1.00 94.10           C
+    ATOM      8  O   LEU A   2     144.955 175.006 182.902  1.00 94.10           O
+    ATOM      9  N   LEU A   3     145.308 174.774 185.119  1.00 85.46           N
+    ATOM     10  CA  LEU A   3     146.530 173.943 184.968  1.00 85.46           C
+    ATOM     11  C   LEU A   3     146.183 172.644 184.233  1.00 85.46           C
+    ATOM     12  O   LEU A   3     147.041 172.158 183.486  1.00 85.46           O
+    ATOM     13  N   THR A   4     144.995 172.080 184.469  1.00 78.43           N
+    ATOM     14  CA  THR A   4     144.562 170.865 183.731  1.00 78.43           C
+    ATOM     15  C   THR A   4     144.495 171.238 182.257  1.00 78.43           C
+    ATOM     16  O   THR A   4     144.799 170.379 181.415  1.00 78.43           O
+    ATOM     17  N   ALA A   5     144.106 172.473 181.971  1.00 81.75           N
+    ATOM     18  CA  ALA A   5     143.932 172.879 180.563  1.00 81.75           C
+    ATOM     19  C   ALA A   5     145.258 172.763 179.820  1.00 81.75           C
+    ATOM     20  O   ALA A   5     145.226 172.430 178.625  1.00 81.75           O
+    ATOM     21  N   VAL A   6     146.376 173.032 180.481  1.00 78.07           N
+    ATOM     22  CA  VAL A   6     147.641 173.031 179.697  1.00 78.07           C
+    ATOM     23  C   VAL A   6     147.812 171.645 179.075  1.00 78.07           C
+    ATOM     24  O   VAL A   6     148.284 171.579 177.927  1.00 78.07           O
+    ATOM     25  N   VAL A   7     147.432 170.591 179.792  1.00 74.67           N
+    ATOM     26  CA  VAL A   7     147.625 169.201 179.284  1.00 74.67           C
+    ATOM     27  C   VAL A   7     146.788 169.013 178.016  1.00 74.67           C
+    ATOM     28  O   VAL A   7     147.283 168.366 177.077  1.00 74.67           O
+    ATOM     29  N   ILE A   8     145.578 169.563 177.978  1.00 74.05           N
+    ATOM     30  CA  ILE A   8     144.675 169.313 176.823  1.00 74.05           C
+    ATOM     31  C   ILE A   8     145.196 170.048 175.593  1.00 74.05           C
+    ATOM     32  O   ILE A   8     145.198 169.445 174.517  1.00 74.05           O
+    ATOM     33  N   ILE A   9     145.629 171.296 175.755  1.00 74.50           N
+    ATOM     34  CA  ILE A   9     146.126 172.106 174.604  1.00 74.50           C
+    ATOM     35  C   ILE A   9     147.386 171.450 174.047  1.00 74.50           C
+    ATOM     36  O   ILE A   9     147.482 171.308 172.811  1.00 74.50           O
+    ATOM     37  N   LEU A  10     148.293 171.030 174.925  1.00 73.68           N
+    ATOM     38  CA  LEU A  10     149.575 170.441 174.479  1.00 73.68           C
+    ATOM     39  C   LEU A  10     149.354 169.126 173.723  1.00 73.68           C
+    ATOM     40  O   LEU A  10     150.009 168.943 172.687  1.00 73.68           O
+    ATOM     41  N   PHE B   1     162.789 177.777 170.134  1.00 53.51           N
+    ATOM     42  CA  PHE B   1     162.946 176.392 170.652  1.00 53.51           C
+    ATOM     43  C   PHE B   1     162.232 176.293 172.003  1.00 53.51           C
+    ATOM     44  O   PHE B   1     162.149 177.326 172.684  1.00 53.51           O
+    ATOM     45  N   GLU B   2     161.730 175.107 172.376  1.00 56.01           N
+    ATOM     46  CA  GLU B   2     160.942 174.968 173.632  1.00 56.01           C
+    ATOM     47  C   GLU B   2     161.361 173.730 174.432  1.00 56.01           C
+    ATOM     48  O   GLU B   2     161.929 172.812 173.827  1.00 56.01           O
+    ATOM     49  N   THR B   3     161.121 173.728 175.748  1.00 53.78           N
+    ATOM     50  CA  THR B   3     161.405 172.555 176.618  1.00 53.78           C
+    ATOM     51  C   THR B   3     160.260 172.466 177.631  1.00 53.78           C
+    ATOM     52  O   THR B   3     159.705 173.523 177.954  1.00 53.78           O
+    ATOM     53  N   LYS B   4     159.915 171.261 178.100  1.00 53.44           N
+    ATOM     54  CA  LYS B   4     158.843 171.096 179.120  1.00 53.44           C
+    ATOM     55  C   LYS B   4     159.338 170.229 180.285  1.00 53.44           C
+    ATOM     56  O   LYS B   4     160.015 169.228 180.014  1.00 53.44           O
+    ATOM     57  N   PHE B   5     159.027 170.621 181.526  1.00 51.46           N
+    ATOM     58  CA  PHE B   5     159.427 169.844 182.728  1.00 51.46           C
+    ATOM     59  C   PHE B   5     158.394 170.041 183.842  1.00 51.46           C
+    ATOM     60  O   PHE B   5     157.598 170.979 183.736  1.00 51.46           O
+    ATOM     61  N   GLN B   6     158.380 169.159 184.849  1.00 59.92           N
+    ATOM     62  CA  GLN B   6     157.387 169.243 185.954  1.00 59.92           C
+    ATOM     63  C   GLN B   6     158.039 168.941 187.304  1.00 59.92           C
+    ATOM     64  O   GLN B   6     158.849 168.010 187.349  1.00 59.92           O
+    ATOM     65  N   VAL B   7     157.707 169.696 188.357  1.00 54.65           N
+    ATOM     66  CA  VAL B   7     158.227 169.410 189.731  1.00 54.65           C
+    ATOM     67  C   VAL B   7     157.089 169.499 190.756  1.00 54.65           C
+    ATOM     68  O   VAL B   7     156.370 170.513 190.732  1.00 54.65           O
+    END
+""")
+
+
 # A ligand belonging to chain B, appended to _TWO_CHAIN_PDB.
 _LIGAND_ON_B = dedent("""\
     HETATM   17  C1  LIG B 101      20.000  20.000   0.000  1.00  0.00           C
@@ -132,6 +210,13 @@ _LIGAND_ON_B = dedent("""\
 def helix_pdb(tmp_path):
     p = tmp_path / "helix.pdb"
     p.write_text(_HELIX_PDB)
+    return p
+
+
+@pytest.fixture
+def helix_sheet_pdb(tmp_path):
+    p = tmp_path / "helix_sheet.pdb"
+    p.write_text(_HELIX_SHEET_PDB)
     return p
 
 
@@ -452,7 +537,8 @@ def test_ribbon_polygons_in_svg(helix_pdb):
     assert "<polygon" in svg
 
 
-@pytest.mark.parametrize("style", ["cartoon", "plastic", "matte", "pymol", "illustrative"])
+# "cartoon" is no longer here: it is now an accepted alias for gloss.
+@pytest.mark.parametrize("style", ["plastic", "matte", "pymol", "illustrative"])
 def test_removed_protein_styles_raise(helix_pdb, style):
     """Removed legacy styles should fail fast with a validation error."""
     mol = load(helix_pdb)
@@ -466,6 +552,18 @@ def test_protein_gloss_respects_transparent_background(helix_pdb):
     svg = str(render(mol, protein="gloss", orient=False, transparent=True))
     assert 'style="background:transparent"' in svg
     assert 'fill="#000000"' not in svg
+
+
+def test_cartoon_is_an_alias_for_gloss(helix_pdb):
+    """``cartoon`` is the name users reach for; it must resolve to gloss."""
+    from xyzrender.ribbon import normalize_ribbon_style, ribbon_style_names
+
+    assert normalize_ribbon_style("cartoon") == "gloss"
+    assert "cartoon" in ribbon_style_names()
+    assert "cartoon" not in ribbon_style_names(include_aliases=False)
+
+    mol = load(helix_pdb)
+    assert str(render(mol, protein="cartoon", orient=False)) == str(render(mol, protein="gloss", orient=False))
 
 
 def test_protein_invalid_style_raises(helix_pdb):
@@ -1117,6 +1215,52 @@ def test_strand_gets_an_arrowhead(sheet_pdb):
     body = hw[res_t <= 5.0].mean()
     assert hw.max() > body * 1.5, "no flange"
     assert hw[-1] < body * 0.5, "strand does not taper to a point"
+
+
+def test_helix_sheet_fixture_assigns_both_ss_types(helix_sheet_pdb):
+    """The two-chain fixture carries one helix and one strand."""
+    pd = _require_protein_data(load(helix_sheet_pdb).protein_data)
+    assert [r.ss_type for r in pd.chains["A"].residues] == ["H"] * 10
+    assert [r.ss_type for r in pd.chains["B"].residues] == ["E"] * 7
+
+
+def test_strand_arrowhead_reaches_the_rendered_surface(helix_sheet_pdb):
+    """The flange survives into the drawn polygons, not just _sample_widths."""
+    import re
+
+    import numpy as np
+
+    mol = load(helix_sheet_pdb)
+    svg = str(render(mol, protein=True, exclude_chains="A", orient=False))
+    pts = np.array(
+        [
+            [float(v) for v in tok.split(",")]
+            for m in re.finditer(r'<polygon points="([^"]+)"', svg)
+            for tok in m.group(1).split()
+        ]
+    )
+    # Widths measured across the strand's own axis, so the test does not depend
+    # on canvas orientation.
+    centred = pts - pts.mean(axis=0)
+    axis, perp = np.linalg.svd(centred, full_matrices=False)[2][:2]
+    t = centred @ axis
+    w = np.abs(centred @ perp)
+    frac = (t - t.min()) / (t.max() - t.min())
+    ends = sorted((w[frac < 0.25].max(), w[frac > 0.75].max()))
+    assert ends[1] > 2.0 * ends[0], "no flange at either end of the strand"
+
+
+def test_helix_and_sheet_chains_render_as_separate_ribbons(helix_sheet_pdb):
+    """Two chains get two colours, and excluding one drops its geometry."""
+    import re
+
+    mol = load(helix_sheet_pdb)
+    both = str(render(mol, protein=True, orient=False))
+    only_b = str(render(mol, protein=True, exclude_chains="A", orient=False))
+    assert both.count("<polygon") > only_b.count("<polygon")
+
+    fills = {m.group(1) for m in re.finditer(r'<polygon points="[^"]+" fill="([^"]+)"', both)}
+    assert len(fills) > 1
 
 
 def test_short_strand_still_renders(tmp_path):

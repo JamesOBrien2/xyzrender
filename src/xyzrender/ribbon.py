@@ -144,6 +144,10 @@ _RIBBON_STYLE_PROFILES: dict[str, RibbonStyleProfile] = {
 }
 
 
+# Accepted alternative spellings, resolved to a real profile.
+_RIBBON_STYLE_ALIASES: dict[str, str] = {"cartoon": "gloss"}
+
+
 def default_ribbon_style() -> str:
     """Canonical default style used for --protein and protein=True."""
     return _DEFAULT_RIBBON_STYLE
@@ -152,6 +156,7 @@ def default_ribbon_style() -> str:
 def normalize_ribbon_style(style: str) -> str:
     """Normalize and validate ribbon style names."""
     key = style.strip().lower()
+    key = _RIBBON_STYLE_ALIASES.get(key, key)
     if key not in _RIBBON_STYLE_PROFILES:
         raise ValueError(f"unknown ribbon style {style!r}")
     return key
@@ -164,7 +169,10 @@ def ribbon_style_profile(style: str) -> RibbonStyleProfile:
 
 def ribbon_style_names(*, include_aliases: bool = True) -> tuple[str, ...]:
     """Return valid ribbon style names for API/CLI validation."""
-    return tuple(sorted(_RIBBON_STYLE_PROFILES))
+    names = set(_RIBBON_STYLE_PROFILES)
+    if include_aliases:
+        names |= set(_RIBBON_STYLE_ALIASES)
+    return tuple(sorted(names))
 
 
 def ribbon_style_uses_gradients(style: str) -> bool:

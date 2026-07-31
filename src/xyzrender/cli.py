@@ -140,6 +140,16 @@ Highlight / Regions:
   --radius-scale ATOMS FACTOR
                           Per-atom radius scale (multiplies on top of -a)
 
+Protein (.pdb):
+  --protein [STYLE]       Backbone as a shaded cartoon: gloss (default),
+                          illustration, cartoon
+  --color-by MODE         chain (default), rainbow, ss, bfactor
+  --chain-color C COLOR   Per-chain colour override (repeatable)
+  --exclude-chains "A,B"  Drop chains and their heteroatoms
+  --sidechain [RESIDUES]  Side-chain sticks (all, or "45,102-108" / "A:45")
+  --highlight-ligand      Recolour ligands (--ligand-color to set the colour)
+  --nci-ligand            Keep only ligand-associated NCI contacts
+
 Crystal:
   --cell                  Draw unit cell box
   --ghosts / --no-ghosts  Periodic image atoms on/off
@@ -766,14 +776,14 @@ def main() -> None:
         type=float,
         default=None,
         metavar="FLOAT",
-        help="Ribbon width in Å for helices and sheets (default 2.2).",
+        help="Ribbon width in Å for helices and sheets (default 4.5).",
     )
     prot_g.add_argument(
         "--loop-width",
         type=float,
         default=None,
         metavar="FLOAT",
-        help="Loop-width cap in Å for coil segments (default 0.8).",
+        help="Loop-width cap in Å for coil segments (default 0.9).",
     )
     prot_g.add_argument(
         "--color-by",
