@@ -187,9 +187,22 @@ def test_cli_protein_removed_style_fails(monkeypatch):
 
     from xyzrender import cli
 
-    monkeypatch.setattr(sys, "argv", ["xyzrender", str(STRUCTURES / "water.pdb"), "--protein", "cartoon"])
+    monkeypatch.setattr(sys, "argv", ["xyzrender", str(STRUCTURES / "water.pdb"), "--protein", "plastic"])
     with pytest.raises(SystemExit):
         cli.main()
+
+
+def test_cli_accepts_the_cartoon_alias(monkeypatch, tmp_path):
+    import sys
+
+    from xyzrender import cli
+
+    out = tmp_path / "out.svg"
+    monkeypatch.setattr(
+        sys, "argv", ["xyzrender", str(STRUCTURES / "water.pdb"), "--protein", "cartoon", "-o", str(out)]
+    )
+    cli.main()
+    assert out.exists()
 
 
 def test_cli_highlight_ligand_flag_wires_to_render(monkeypatch):

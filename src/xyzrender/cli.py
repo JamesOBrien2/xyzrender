@@ -178,6 +178,7 @@ def main() -> None:
 
     default_style = default_ribbon_style()
     protein_styles = ribbon_style_names(include_aliases=True)
+    listed_styles = ribbon_style_names(include_aliases=False)
 
     # Intercept -h before argparse to print compact help
     if "-h" in sys.argv[1:] and "--help" not in sys.argv[1:]:
@@ -760,7 +761,8 @@ def main() -> None:
         metavar="STYLE",
         help=(
             "Enable ribbon rendering when protein semantics are available. "
-            f"Optional STYLE (default: {default_style}): {', '.join(protein_styles)}."
+            f"Optional STYLE (default: {default_style}): {', '.join(listed_styles)} "
+            "(cartoon is accepted as an alias for gloss)."
         ),
     )
     prot_g.add_argument(

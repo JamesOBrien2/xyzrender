@@ -221,7 +221,7 @@ Applies to inputs carrying protein semantics (`.pdb`). See [Proteins & biomolecu
 | Flag | Description |
 |------|-------------|
 | `--protein [STYLE]` | Render the backbone as a shaded cartoon instead of atoms and bonds. `STYLE` is `gloss` (default), `illustration`, or `cartoon` (alias for `gloss`) |
-| `--color-by MODE` | Cartoon colouring: `chain` (default), `rainbow` (N→C per chain), `ss` (helix/sheet/coil), `bfactor` (temperature factor / AlphaFold pLDDT) |
+| `--color-by MODE` | Cartoon colouring: `chain` (default), `rainbow` (N→C per chain), `ss` (helix/sheet/coil), `bfactor` (temperature factor / AlphaFold pLDDT — the ramp maps min→max as given, and low B means *well* ordered while low pLDDT means *less* confident) |
 | `--chain-color CHAIN COLOR` | Per-chain colour override, e.g. `--chain-color A steelblue`; repeatable |
 | `--exclude-chains CHAINS` | Drop chains by ID, e.g. `"A,B"` — their ribbon and their heteroatoms alike |
 | `--sidechain [RESIDUES]` | Draw side chains as sticks on the ribbon. Optionally restrict, e.g. `"45,102-108"` or `"A:45,B:12"` |

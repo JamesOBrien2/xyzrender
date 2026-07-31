@@ -640,7 +640,13 @@ def test_resolve_protein_mode_rejects_removed_styles():
     from xyzrender.api import _resolve_protein_mode
 
     with pytest.raises(ValueError, match="unknown style"):
-        _resolve_protein_mode("cartoon")
+        _resolve_protein_mode("plastic")
+
+
+def test_resolve_protein_mode_accepts_the_cartoon_alias():
+    from xyzrender.api import _resolve_protein_mode
+
+    assert _resolve_protein_mode("cartoon") == (True, "gloss")
 
 
 # ---------------------------------------------------------------------------

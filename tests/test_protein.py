@@ -783,6 +783,7 @@ def test_demo_fixture_renders_dotted_nci_in_protein_mode():
 # ---------------------------------------------------------------------------
 
 _8UWL = STRUCTURES / "8UWL.pdb"
+_1UBQ = STRUCTURES / "1UBQ.pdb"  # small mixed alpha/beta, unrelated fold
 
 
 def _records_ss(pdb_text: str) -> dict[tuple[str, int], str]:
@@ -846,6 +847,37 @@ def test_ss_geometry_inference_accuracy_floor(tmp_path):
     assert recall["H"] >= 0.93, f"helix recall regressed to {recall['H']:.1%}"
     assert recall["E"] >= 0.92, f"sheet recall regressed to {recall['E']:.1%}"
     assert recall["C"] >= 0.71, f"coil recall regressed to {recall['C']:.1%}"
+
+
+def test_ss_geometry_inference_generalises_to_a_second_structure(tmp_path):
+    """Same blind test on ubiquitin, whose fold shares nothing with 8UWL.
+
+    Floors are measured on 1UBQ, not carried over: the constants were tuned on
+    8UWL alone, so a second structure lands somewhere else.  Strand recall is
+    the axis that travels least well (78.8% here against 92% on 8UWL) --
+    ubiquitin's five-strand sheet has short edge strands whose ends read as
+    coil.
+    """
+    if not _1UBQ.exists():
+        pytest.skip("1UBQ.pdb fixture not present in this checkout")
+    text = _1UBQ.read_text()
+    blind = tmp_path / "1UBQ_noss.pdb"
+    blind.write_text("\n".join(ln for ln in text.splitlines() if not ln.startswith(("HELIX ", "SHEET "))))
+
+    truth_he = _records_ss(text)
+    got = _assigned_ss(blind)
+    truth = {k: truth_he.get(k, "C") for k in got}
+
+    overall = sum(truth[k] == got[k] for k in got) / len(got)
+    recall = {}
+    for label in "HEC":
+        n = sum(1 for k in got if truth[k] == label)
+        recall[label] = sum(1 for k in got if truth[k] == label and got[k] == label) / n
+
+    assert overall >= 0.87, f"overall SS agreement regressed to {overall:.1%}"
+    assert recall["H"] >= 0.90, f"helix recall regressed to {recall['H']:.1%}"
+    assert recall["E"] >= 0.75, f"sheet recall regressed to {recall['E']:.1%}"
+    assert recall["C"] >= 0.95, f"coil recall regressed to {recall['C']:.1%}"
 
 
 # ---------------------------------------------------------------------------
@@ -1254,13 +1286,20 @@ def test_helix_and_sheet_chains_render_as_separate_ribbons(helix_sheet_pdb):
     """Two chains get two colours, and excluding one drops its geometry."""
     import re
 
-    mol = load(helix_sheet_pdb)
-    both = str(render(mol, protein=True, orient=False))
-    only_b = str(render(mol, protein=True, exclude_chains="A", orient=False))
-    assert both.count("<polygon") > only_b.count("<polygon")
+    def fills(**kw):
+        svg = str(render(mol, protein=True, orient=False, **kw))
+        return svg.count("<polygon"), {m.group(1) for m in re.finditer(r'<polygon [^>]*fill="([^"]+)"', svg)}
 
-    fills = {m.group(1) for m in re.finditer(r'<polygon points="[^"]+" fill="([^"]+)"', both)}
-    assert len(fills) > 1
+    mol = load(helix_sheet_pdb)
+    n_both, _ = fills()
+    n_a, fill_a = fills(exclude_chains="B")
+    n_b, fill_b = fills(exclude_chains="A")
+    assert n_both > n_a
+    assert n_both > n_b
+
+    # Per-quad shading gives one chain many fills, so the claim is that the two
+    # chains' shade ramps do not overlap -- not that more than one fill exists.
+    assert not (fill_a & fill_b)
 
 
 def test_short_strand_still_renders(tmp_path):
