@@ -273,6 +273,17 @@ def render_svg(
         if _drop and len(_drop) < n:
             _keep = np.array([i for i in range(n) if i not in _drop], dtype=int)
             _fit_pos, _fit_r = pos[_keep], fit_radii[_keep]
+    _protein_cartoon_active = False
+    if cfg.protein and protein_data is not None:
+        from xyzrender.ribbon import has_renderable_ribbon, ribbon_fit_margin
+
+        _protein_cartoon_active = has_renderable_ribbon(protein_data, cfg, pos)
+        if _protein_cartoon_active:
+            _ribbon_margin = ribbon_fit_margin(cfg)
+            _ribbon_lo = _fit_pos[:, :2].min(axis=0) - _ribbon_margin
+            _ribbon_hi = _fit_pos[:, :2].max(axis=0) + _ribbon_margin
+            extra_lo = np.minimum(extra_lo, _ribbon_lo) if extra_lo is not None else _ribbon_lo
+            extra_hi = np.maximum(extra_hi, _ribbon_hi) if extra_hi is not None else _ribbon_hi
     scale, cx, cy, canvas_w, canvas_h = _fit_canvas(_fit_pos, _fit_r, cfg, extra_lo=extra_lo, extra_hi=extra_hi)
 
     # scale_ratio: encodes both molecule complexity AND canvas size so that
@@ -528,14 +539,20 @@ def render_svg(
                     hidden.add(ai)
 
     # Protein ribbon mode: explicitly excluded chains, ligands and all.
+    _excluded_protein_atoms: set[int] = set()
+    _nci_sidechain_atoms: set[int] = set()
     if cfg.protein and protein_data is not None and cfg.exclude_chains:
         from xyzrender.ribbon import excluded_atom_indices
 
-        hidden.update(excluded_atom_indices(protein_data, cfg.exclude_chains))
+        _excluded_protein_atoms = excluded_atom_indices(protein_data, cfg.exclude_chains)
+        for centroid, members in graph.graph.get("nci_centroid_sites", {}).items():
+            if members and all(member in _excluded_protein_atoms for member in members):
+                _excluded_protein_atoms.add(centroid)
+        hidden.update(_excluded_protein_atoms)
 
     # Protein ribbon mode: suppress backbone (and optionally sidechain) atoms.
     # HETATM atoms of the chains we keep are left visible for ball-and-stick.
-    if cfg.protein and protein_data is not None:
+    if _protein_cartoon_active and protein_data is not None:
         hidden.update(protein_data.backbone_indices)
         if not cfg.show_sidechain:
             hidden.update(protein_data.sidechain_indices)
@@ -546,15 +563,65 @@ def render_svg(
             _keep = select_sidechain_atoms(protein_data, cfg.sidechain_residues, exclude_chains=set(cfg.exclude_chains))
             hidden.update(protein_data.sidechain_indices - _keep)
 
+        # Keep every NCI overlay, including backbone contacts, but reveal atom
+        # context only for genuine sidechain endpoints.  Backbone contacts retain
+        # their exact dotted geometry while the solid cartoon remains their sole
+        # protein representation.
+        protein_backbone = set(protein_data.backbone_indices)
+        protein_sidechains = set(protein_data.sidechain_indices)
+        # Added PDB hydrogens are commonly absent from the name-based backbone
+        # set.  Classify an H through its covalent heavy-atom parent so an amide
+        # N-H contact cannot masquerade as a sidechain contact and reveal an
+        # unrelated sidechain moiety from the same residue.
+        sidechain_contact_nodes = {
+            atom
+            for atom in protein_sidechains
+            if symbols[atom] != "H"
+            or not any(
+                neighbor in protein_backbone and not attrs.get("NCI", False) for neighbor, attrs in graph[atom].items()
+            )
+        }
+        nci_edges = [(i, j) for i, j, data in graph.edges(data=True) if data.get("NCI", False)]
+        _nci_endpoints = {atom for pair in nci_edges for atom in pair if atom in sidechain_contact_nodes}
+        nci_nodes = {atom for pair in nci_edges for atom in pair}
+        for centroid, members in graph.graph.get("nci_centroid_sites", {}).items():
+            if centroid in nci_nodes:
+                _nci_endpoints.update(member for member in members if member in sidechain_contact_nodes)
+        _nci_endpoints.update(
+            atom for pair in cfg.nci_bonds for atom in pair if 0 <= atom < n and atom in sidechain_contact_nodes
+        )
+        _nci_context = set(_nci_endpoints)
+        for chain in protein_data.chains.values():
+            for residue in chain.residues:
+                residue_atoms = set(residue.atom_indices)
+                contacted_sidechain = residue_atoms & _nci_endpoints & sidechain_contact_nodes
+                if contacted_sidechain:
+                    sidechain_atoms = residue_atoms & protein_sidechains
+                    _nci_sidechain_atoms.update(sidechain_atoms)
+                    # Preserve the endpoint H when the detector used one, but do
+                    # not repopulate every otherwise-hidden sidechain hydrogen.
+                    _nci_context.update(
+                        atom for atom in sidechain_atoms if symbols[atom] != "H" or atom in _nci_endpoints
+                    )
+        hidden.difference_update(_nci_context - _excluded_protein_atoms)
+
     # Sidechain attachment: CA is hidden but its bond to CB must still be drawn,
     # or --sidechain renders sticks floating unattached to the ribbon.  The bond
     # starts where it leaves the swept ribbon surface rather than at CA, which
     # is the tape's centreline and therefore buried inside the solid.
     _sc_anchor: dict[int, np.ndarray] = {}
-    if cfg.protein and protein_data is not None and cfg.show_sidechain:
+    if _protein_cartoon_active and protein_data is not None and (cfg.show_sidechain or _nci_sidechain_atoms):
         from xyzrender.ribbon import sidechain_anchors
 
         _sc_anchor = sidechain_anchors(protein_data, cfg, pos)
+        if not cfg.show_sidechain:
+            contacted_ca = {
+                residue.ca_index
+                for chain in protein_data.chains.values()
+                for residue in chain.residues
+                if residue.ca_index is not None and set(residue.atom_indices) & _nci_sidechain_atoms
+            }
+            _sc_anchor = {ca: anchor for ca, anchor in _sc_anchor.items() if ca in contacted_ca}
 
     aromatic_rings = [] if cfg.hide_bonds else _compute_aromatic_rings(graph, bonds)
 
@@ -913,7 +980,6 @@ def render_svg(
     # queue so each item interleaves with atoms at its own depth.  Drained
     # back-to-front in the atom loop.
     _overlays: list[tuple[float, list[str]]] = []
-    _overlay_idx = 0
 
     if cfg.nci_contours is not None:
         from xyzrender.nci import nci_lobe_svg_items, nci_static_svg_defs
@@ -1022,19 +1088,8 @@ def render_svg(
             )
         )
 
-    # Stable sort preserves insertion order for ties, so internally-z-sorted
-    # NCI items stay coherent against MO / pore items at the same depth.
-    _overlays.sort(key=lambda x: x[0])
-
-    def _drain_overlays(next_z: float) -> None:
-        nonlocal _overlay_idx
-        while _overlay_idx < len(_overlays) and _overlays[_overlay_idx][0] < next_z:
-            svg.extend(_overlays[_overlay_idx][1])
-            _overlay_idx += 1
-
     # Protein ribbon z-interleaving (same drain pattern as NCI patches)
     ribbon_items: list[tuple[float, list[str]]] = []
-    ribbon_idx = 0
     if cfg.protein and protein_data is not None:
         from xyzrender.ribbon import ribbon_svg_items, trace_svg_items
         from xyzrender.types import ProteinConfidence
@@ -1061,11 +1116,17 @@ def render_svg(
                 fog_rgb=fog_rgb,
             )
 
-    def _drain_ribbon(next_z: float) -> None:
-        nonlocal ribbon_idx
-        while ribbon_idx < len(ribbon_items) and ribbon_items[ribbon_idx][0] < next_z:
-            svg.extend(ribbon_items[ribbon_idx][1])
-            ribbon_idx += 1
+    # Surface overlays and ribbon panels must share one queue.  Draining two
+    # independent sorted queues at each atom would always paint one category
+    # over the other, regardless of their relative depths.
+    _scene_items = sorted((*_overlays, *ribbon_items), key=lambda item: item[0])
+    _scene_idx = 0
+
+    def _drain_scene_items(next_z: float) -> None:
+        nonlocal _scene_idx
+        while _scene_idx < len(_scene_items) and _scene_items[_scene_idx][0] < next_z:
+            svg.extend(_scene_items[_scene_idx][1])
+            _scene_idx += 1
 
     # Interleaved z-order: for each atom, render it then its bonds to deeper atoms
 
@@ -1618,19 +1679,53 @@ def render_svg(
                 )
             _pv_pos += 1
 
-        # Drain ribbon panels that belong behind this atom.  Deliberately before
-        # the `hidden` check: in protein mode every backbone atom is hidden, so
-        # gating this on visibility would collapse the ribbon's depth resolution
-        # to the handful of visible ligand atoms.
-        if ribbon_items:
-            _drain_ribbon(float(pos[ai][2]))
+        # Hidden backbone atoms still provide depth markers.  Ribbon panels and
+        # surface overlays therefore interleave correctly even when only a ligand
+        # remains visible as ball-and-stick geometry.
+        if _scene_items:
+            _drain_scene_items(float(pos[ai][2]))
 
         if ai in hidden:
+            # Cartoon mode normally skips a hidden atom before its bond loop.
+            # Preserve an NCI whose other endpoint is hidden as well: emit it
+            # once from the back endpoint, but never recover an explicitly
+            # excluded chain.
+            if not cfg.hide_bonds and bw > 0 and ai not in _excluded_protein_atoms:
+                for aj_int in bond_adj.get(ai, ()):
+                    battrs = bonds[(ai, aj_int)]
+                    if (
+                        battrs.style != BondStyle.DOTTED
+                        or aj_int not in hidden
+                        or aj_int in _excluded_protein_atoms
+                        or _z_rank[aj_int] <= idx
+                    ):
+                        continue
+                    bond_op = 1.0
+                    if _is_image[ai] or _is_image[aj_int]:
+                        bond_op = cfg.periodic_image_opacity
+                    else:
+                        _struct_ops = [
+                            value for value in (struct_opacities[ai], struct_opacities[aj_int]) if value is not None
+                        ]
+                        if _struct_ops:
+                            bond_op = min(_struct_ops)
+                    _diff_op = _diffuse_op.get((ai, aj_int))
+                    if _diff_op is not None:
+                        bond_op = min(bond_op, _diff_op)
+                    if bond_op < 0.01:
+                        continue
+                    add_bond(
+                        ai,
+                        aj_int,
+                        battrs.order,
+                        battrs.style,
+                        opacity=bond_op,
+                        color_override=battrs.color,
+                        width_override=battrs.width,
+                        outline_width_override=battrs.outline_width,
+                        outline_color_override=battrs.outline_color,
+                    )
             continue
-
-        # Drain surface overlays (NCI / pore / MO) that belong behind this atom
-        if _overlays:
-            _drain_overlays(float(pos[ai][2]))
 
         is_image = _is_image[ai]
         # Outgoing bonds to deeper atoms, sorted shallowest-last so front
@@ -1647,7 +1742,9 @@ def render_svg(
                 # order — the hidden atom `continue`s before this loop ever
                 # runs, so deferring to z-order drops the bond outright
                 # whenever the hidden partner happens to sit behind.
-                _hidden_partner = (aj_int in _sc_anchor) or (aj_int in hidden and battrs.style == BondStyle.DOTTED)
+                _hidden_partner = aj_int not in _excluded_protein_atoms and (
+                    (aj_int in _sc_anchor) or (aj_int in hidden and battrs.style == BondStyle.DOTTED)
+                )
                 if _z_rank[aj_int] <= idx and not _hidden_partner:
                     continue
                 # Otherwise a hidden endpoint suppresses the bond.
@@ -1851,14 +1948,9 @@ def render_svg(
     if _bond_outline_layer:
         svg[_molecule_insert_idx:_molecule_insert_idx] = _bond_outline_layer
 
-    # Drain any remaining surface overlays (z_depth > frontmost atom)
-    if _overlays:
-        _drain_overlays(float("inf"))
-
-    # Ribbon panels in front of all atoms
-    while ribbon_idx < len(ribbon_items):
-        svg.extend(ribbon_items[ribbon_idx][1])
-        ribbon_idx += 1
+    # Drain scene geometry in front of all atoms.
+    if _scene_items:
+        _drain_scene_items(float("inf"))
 
     # Flush any vectors whose origin is in front of all atoms
     while _pv_pos < len(_pending_vecs):

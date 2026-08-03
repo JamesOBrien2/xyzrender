@@ -1788,6 +1788,15 @@ def render_gif(
         msg = "render_gif: gif_diffuse is mutually exclusive with gif_ts / gif_trj"
         raise ValueError(msg)
 
+    protein_enabled, _ = _resolve_protein_mode(protein)
+    if protein_enabled and (gif_ts or gif_trj):
+        msg = "render_gif: protein cartoons are only supported for rotation, bounce, and diffuse GIF modes"
+        raise ValueError(msg)
+
+    if nci_ligand_protein_only and (gif_ts or gif_trj):
+        msg = "render_gif: nci_ligand_protein_only is only supported for rotation, bounce, and diffuse GIF modes"
+        raise ValueError(msg)
+
     if bounce_deg is not None:
         if bounce_deg <= 0:
             msg = "render_gif: gif_bounce must be > 0"
@@ -2200,9 +2209,7 @@ def render_gif(
             ref_graph = _cell_mol.graph
 
         if nci_ligand_protein_only:
-            _nci_sem = None
-            if isinstance(molecule, Molecule):
-                _nci_sem = _best_protein_semantics(molecule.protein_semantics, molecule.protein_data)
+            _nci_sem = _best_protein_semantics(_gif_mol.protein_semantics, _gif_mol.protein_data)
             if _nci_sem is not None:
                 from xyzrender.readers import filter_ligand_protein_nci
 
@@ -2239,17 +2246,15 @@ def render_gif(
                 has_mo=mo,
                 has_dens=dens,
             )
-        _rot_protein_data = None
-        if isinstance(molecule, Molecule):
-            _rot_protein_data = _best_protein_semantics(molecule.protein_semantics, molecule.protein_data)
-            if protein and _rot_protein_data is None:
-                from xyzrender.protein_semantics import extract_protein_semantics
+        _rot_protein_data = _best_protein_semantics(_gif_mol.protein_semantics, _gif_mol.protein_data)
+        if protein and _rot_protein_data is None:
+            from xyzrender.protein_semantics import extract_protein_semantics
 
-                _rot_protein_data = extract_protein_semantics(
-                    ref_graph,
-                    source_path=molecule.source_path,
-                    protein_requested=True,
-                )
+            _rot_protein_data = extract_protein_semantics(
+                ref_graph,
+                source_path=_gif_mol.source_path,
+                protein_requested=True,
+            )
 
         render_rotation_gif(
             graph=ref_graph,
@@ -2533,6 +2538,56 @@ def _resolve_filter_indices(spec: _AtomSelector | list[_AtomSelector] | None, gr
     return resolved
 
 
+def _remap_protein_metadata(
+    data: "ProteinData | ProteinSemantics | None",
+    node_map: dict[int, int],
+) -> "ProteinData | ProteinSemantics | None":
+    """Deep-copy protein metadata and remap every retained atom reference."""
+    if data is None:
+        return None
+
+    remapped = copy.deepcopy(data)
+    chains = {}
+    for chain_id, chain in remapped.chains.items():
+        residues = []
+        for residue in chain.residues:
+            residue.atom_indices = [node_map[idx] for idx in residue.atom_indices if idx in node_map]
+            if not residue.atom_indices:
+                continue
+            for field_name in ("ca_index", "c_index", "o_index", "n_index"):
+                old_index = getattr(residue, field_name)
+                setattr(residue, field_name, node_map.get(old_index) if old_index is not None else None)
+            residues.append(residue)
+        if residues:
+            chain.residues = residues
+            chains[chain_id] = chain
+    remapped.chains = chains
+
+    for field_name in (
+        "hetatm_indices",
+        "backbone_indices",
+        "sidechain_indices",
+        "ligand_indices",
+        "water_indices",
+        "ion_indices",
+    ):
+        indices = getattr(remapped, field_name)
+        setattr(remapped, field_name, {node_map[idx] for idx in indices if idx in node_map})
+    remapped.trace_chains = {
+        chain_id: [node_map[idx] for idx in trace if idx in node_map]
+        for chain_id, trace in remapped.trace_chains.items()
+        if chain_id in chains
+    }
+    remapped.het_chains = {
+        chain_id: {node_map[idx] for idx in indices if idx in node_map}
+        for chain_id, indices in remapped.het_chains.items()
+        if any(idx in node_map for idx in indices)
+    }
+    remapped.helix_spans = [span for span in remapped.helix_spans if span[0] in chains]
+    remapped.sheet_spans = [span for span in remapped.sheet_spans if span[0] in chains]
+    return remapped
+
+
 def _filter_molecule_atoms(
     mol: Molecule,
     *,
@@ -2574,8 +2629,11 @@ def _filter_molecule_atoms(
     real_position_order = [nid for nid in node_ids if graph.nodes[nid].get("symbol") != "*"]
     position_index = {nid: idx for idx, nid in enumerate(real_position_order)}
     kept_position_indices = [position_index[nid] for nid in ordered_keep if nid in position_index]
-    filtered = graph.subgraph(ordered_keep).copy()
-    filtered = nx.convert_node_labels_to_integers(filtered, ordering="default")
+    node_map = {nid: idx for idx, nid in enumerate(ordered_keep)}
+    filtered = nx.relabel_nodes(graph.subgraph(ordered_keep).copy(), node_map, copy=True)
+    # The serialized xyzgraph payload still carries original atom indices.  The
+    # explicitly remapped dataclasses below are now authoritative.
+    filtered.graph.pop("protein_semantics", None)
     ensemble = None
     if mol.ensemble is not None:
         original_ensemble = mol.ensemble
@@ -2603,6 +2661,9 @@ def _filter_molecule_atoms(
         cell_data=copy.deepcopy(mol.cell_data) if mol.cell_data is not None else None,
         oriented=mol.oriented,
         ensemble=ensemble,
+        protein_data=cast("ProteinData | None", _remap_protein_metadata(mol.protein_data, node_map)),
+        protein_semantics=cast("ProteinSemantics | None", _remap_protein_metadata(mol.protein_semantics, node_map)),
+        source_path=mol.source_path,
     )
 
 

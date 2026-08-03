@@ -670,6 +670,24 @@ def _section_dims(
     }
 
 
+def _validate_ribbon_dimensions(cfg: "RenderConfig") -> None:
+    for name in ("ribbon_width", "loop_width"):
+        value = float(getattr(cfg, name))
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be a positive finite number, got {value!r}")
+
+
+def ribbon_fit_margin(cfg: "RenderConfig") -> float:
+    """Maximum world-space radius of a ribbon cross-section for canvas fitting."""
+    _validate_ribbon_dimensions(cfg)
+    style = ribbon_style_profile(cfg.protein_style)
+    dims = _section_dims(cfg.ribbon_width / 2.0, cfg.loop_width / 2.0, style)
+    radii = [float(np.hypot(hw, ht)) for hw, ht in dims.values()]
+    sheet_hw, sheet_ht = dims["E"]
+    radii.append(float(np.hypot(sheet_hw * _ARROW_FLANGE, sheet_ht)))
+    return max(radii)
+
+
 def _silhouette_edges(
     px: np.ndarray,
     py: np.ndarray,
@@ -903,6 +921,30 @@ def _split_backbone_segments(
     return [seg for seg in segments if len(seg) >= 2]
 
 
+def has_renderable_ribbon(
+    protein_data: "ProteinData | ProteinSemantics",
+    cfg: "RenderConfig",
+    pos: np.ndarray,
+) -> bool:
+    """Whether protein mode can emit at least one ribbon or trace segment."""
+    from xyzrender.types import ProteinConfidence
+
+    if protein_data.confidence_tier == ProteinConfidence.INSUFFICIENT:
+        return False
+    for chain_id, chain in protein_data.chains.items():
+        if chain_id in cfg.exclude_chains:
+            continue
+        if protein_data.confidence_tier == ProteinConfidence.TRACE_ONLY:
+            trace = protein_data.trace_chains.get(chain_id, [])
+            if len(trace) < 2:
+                trace = [res.ca_index for res in chain.residues if res.ca_index is not None]
+            if len(trace) >= 2:
+                return True
+        elif any(len(segment) >= 2 for segment in _split_backbone_segments(chain.residues, pos)):
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Colour modes
 # ---------------------------------------------------------------------------
@@ -1015,6 +1057,8 @@ def select_sidechain_atoms(
                 msg = f"invalid residue selector {raw_token.strip()!r} (expected e.g. '45', '102-108' or 'A:45')"
                 raise ValueError(msg) from exc
             wanted.append((chain, min(lo, hi), max(lo, hi)))
+        if not wanted:
+            raise ValueError("residue selector must not be empty")
 
     out: set[int] = set()
     for cid, chain_data in protein_data.chains.items():
@@ -1125,6 +1169,7 @@ def ribbon_svg_items(
     emitted at *quad* granularity, which is what allows a helix to occlude its
     own turns.
     """
+    _validate_ribbon_dimensions(cfg)
     chain_ids = [cid for cid in protein_data.chains if cid not in cfg.exclude_chains]
     # Allocate over every chain, then filter: excluding one must not renumber
     # the rest, or the same chain changes colour between figures in a series.

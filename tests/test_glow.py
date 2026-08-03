@@ -23,6 +23,12 @@ def _glow_circles(svg: str) -> list[str]:
     return [m.group(0) for m in re.finditer(r"<circle[^>]*filter=\"url\(#\w*glow\d+\)\"[^>]*/>", svg)]
 
 
+def _svg_attribute(fragment: str, pattern: str) -> str:
+    match = re.search(pattern, fragment)
+    assert match is not None
+    return match.group(1)
+
+
 # ---------------------------------------------------------------------------
 # Backward compatibility with the single-group form
 # ---------------------------------------------------------------------------
@@ -42,7 +48,7 @@ def test_index_range_selector(caffeine):
 def test_uncoloured_glow_uses_each_atoms_own_colour(caffeine):
     """No colour given => the glow inherits the atom colour, as it always has."""
     svg = str(render(caffeine, glow="N,O", orient=False, fog=False))
-    fills = {re.search(r'fill="([^"]+)"', c).group(1).lower() for c in _glow_circles(svg)}
+    fills = {_svg_attribute(c, r'fill="([^"]+)"').lower() for c in _glow_circles(svg)}
     assert len(fills) == 2, f"expected one fill per element, got {fills}"
 
 
@@ -72,7 +78,7 @@ def test_two_groups_get_their_own_colours(caffeine):
     svg = str(render(caffeine, glow=[("N", "gold"), ("O", "cyan")], orient=False, fog=False))
     circles = _glow_circles(svg)
     assert len(circles) == 6  # 4 N + 2 O
-    fills = [re.search(r'fill="([^"]+)"', c).group(1).lower() for c in circles]
+    fills = [_svg_attribute(c, r'fill="([^"]+)"').lower() for c in circles]
     assert fills.count("#ffd700") == 4
     assert fills.count("#00ffff") == 2
 
@@ -82,7 +88,7 @@ def test_scale_widens_the_glow_circle(caffeine):
 
     def _radii(scale):
         svg = str(render(caffeine, glow="N", glow_scale=scale, orient=False))
-        return [float(re.search(r'r="([\d.]+)"', c).group(1)) for c in _glow_circles(svg)]
+        return [float(_svg_attribute(c, r'r="([\d.]+)"')) for c in _glow_circles(svg)]
 
     small, big = _radii(1.0), _radii(2.5)
     assert all(b > s for s, b in zip(small, big, strict=True))

@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
+from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias
 
@@ -364,6 +365,39 @@ def _rescue_hetatm_bonds(graph: "nx.Graph", data: object) -> None:
             graph.add_edge(a, b, bond_order=attrs.get("bond_order", 1.0))
 
 
+def _rescue_polymer_bonds(graph: "nx.Graph", data: object) -> None:
+    """Fill polymer bonds omitted from PDB ``CONECT`` records.
+
+    Deposited PDB files generally list connectivity for HETATMs only.  Detecting
+    each residue independently avoids the quadratic cost and false contacts of
+    rebuilding a whole protein, then adjacent C--N pairs restore peptide links.
+    """
+    pd = getattr(data, "protein_data", None)
+    atoms = getattr(data, "atoms", None)
+    if pd is None or atoms is None:
+        return
+
+    from math import dist
+
+    from xyzgraph import build_graph
+
+    for chain in pd.chains.values():
+        for residue in chain.residues:
+            indices = residue.atom_indices
+            sub = build_graph([atoms[i] for i in indices], quick=True)
+            for u, v, attrs in sub.edges(data=True):
+                a, b = indices[u], indices[v]
+                if not graph.has_edge(a, b):
+                    graph.add_edge(a, b, bond_order=attrs.get("bond_order", 1.0))
+
+        for left, right in pairwise(chain.residues):
+            if left.c_index is None or right.n_index is None:
+                continue
+            a, b = left.c_index, right.n_index
+            if dist(atoms[a][1], atoms[b][1]) <= 1.9 and not graph.has_edge(a, b):
+                graph.add_edge(a, b, bond_order=1.0)
+
+
 def _isolated_atoms_are_drawn_as_ribbon(isolated: list[int], data: object) -> bool:
     """Whether every bondless atom is backbone/sidechain, i.e. drawn as cartoon.
 
@@ -417,6 +451,7 @@ def graph_from_moldata(
         for i, j, order in data.bonds:
             graph.add_edge(i, j, bond_order=order)
         _rescue_hetatm_bonds(graph, data)
+        _rescue_polymer_bonds(graph, data)
         isolated = [n for n in graph.nodes if graph.degree(n) == 0]
         if isolated and not _isolated_atoms_are_drawn_as_ribbon(isolated, data):
             # Detection is O(n^2) -- 131 s on an 8.6k-atom protein -- so only

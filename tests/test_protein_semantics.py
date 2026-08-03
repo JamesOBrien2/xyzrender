@@ -16,6 +16,27 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def test_malformed_secondary_structure_span_is_rejected():
+    from xyzrender.protein_semantics import _to_xyzrender_semantics
+
+    with pytest.raises(ValueError, match="helix_spans"):
+        _to_xyzrender_semantics({"confidence_tier": "insufficient", "helix_spans": [["A", 1]]})
+
+
+def test_unknown_protein_confidence_is_rejected():
+    from xyzrender.protein_semantics import _to_xyzrender_semantics
+
+    with pytest.raises(ValueError, match="unknown protein confidence"):
+        _to_xyzrender_semantics({"confidence_tier": "future-tier"})
+
+
+def test_malformed_extxyz_property_count_is_ignored():
+    """Optional protein metadata must not make a coordinate-readable XYZ fail."""
+    from xyzrender.protein_semantics import _parse_extxyz_properties
+
+    assert _parse_extxyz_properties("Properties=species:S:1:pos:R:nope") is None
+
+
 def test_extxyz_canonical_semantics(tmp_path):
     p = tmp_path / "prot.xyz"
     p.write_text(

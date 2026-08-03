@@ -67,6 +67,29 @@ def test_load_nci_detect():
     assert mol.graph.number_of_nodes() > 0
 
 
+def test_atom_filter_remaps_protein_metadata_and_preserves_source():
+    """Filtering must keep protein atom references aligned after relabeling."""
+    from xyzrender.api import _filter_molecule_atoms
+
+    original = load(STRUCTURES / "1UBQ.pdb")
+    assert original.protein_data is not None
+    filtered = _filter_molecule_atoms(original, exclude=[1])
+
+    assert filtered.protein_data is not None
+    assert filtered.source_path == original.source_path
+    assert "protein_semantics" not in filtered.graph.graph
+    original_residues = [res for chain in original.protein_data.chains.values() for res in chain.residues]
+    filtered_residues = [res for chain in filtered.protein_data.chains.values() for res in chain.residues]
+    assert len(filtered_residues) == len(original_residues)
+    for before, after in zip(original_residues, filtered_residues, strict=True):
+        if before.ca_index is not None:
+            assert after.ca_index is not None
+            assert filtered.graph.nodes[after.ca_index]["_xyzrender_original_index"] == before.ca_index
+        if before.o_index is not None:
+            assert after.o_index is not None
+            assert filtered.graph.nodes[after.o_index]["_xyzrender_original_index"] == before.o_index
+
+
 def test_load_nci_ligand_auto_enables_detection(monkeypatch, caplog):
     calls: dict[str, bool] = {}
 
@@ -184,6 +207,43 @@ def test_render_gif_protein_default_ghosts_off_for_cell_data(monkeypatch, caffei
     with pytest.raises(RuntimeError, match="__ghost_probe__"):
         render_gif(caffeine_cell, gif_rot="y", protein=True, output=tmp_path / "probe.gif")
     assert captured["ghosts"] is False
+
+
+@pytest.mark.parametrize(("mode_name", "enabled"), [("gif_trj", True), ("gif_ts", True)])
+def test_render_gif_rejects_unsupported_protein_trajectory_modes(mode_name, enabled, tmp_path):
+    """Trajectory readers cannot silently discard requested protein cartoons."""
+    with pytest.raises(ValueError, match=r"protein.*only supported.*rotation"):
+        render_gif(
+            STRUCTURES / "ethanol.xyz",
+            protein=True,
+            output=tmp_path / "protein.gif",
+            **{mode_name: enabled},
+        )
+
+
+@pytest.mark.parametrize(("mode_name", "enabled"), [("gif_trj", True), ("gif_ts", True)])
+def test_render_gif_rejects_ligand_protein_nci_filter_for_trajectory_modes(mode_name, enabled, tmp_path):
+    """Trajectory readers cannot apply a stale single-frame protein partition."""
+    with pytest.raises(ValueError, match=r"nci_ligand_protein_only.*only supported.*rotation"):
+        render_gif(
+            STRUCTURES / "ethanol.xyz",
+            nci_ligand_protein_only=True,
+            output=tmp_path / "nci.gif",
+            **{mode_name: enabled},
+        )
+
+
+def test_render_gif_path_preserves_protein_semantics(monkeypatch, tmp_path):
+    """Path-based rotation GIFs must receive the loaded protein semantics."""
+    captured: dict[str, object] = {}
+
+    def _fake_rotation_gif(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("xyzrender.gif.render_rotation_gif", _fake_rotation_gif)
+    render_gif(STRUCTURES / "1UBQ.pdb", gif_rot="y", protein=True, output=tmp_path / "protein.gif")
+
+    assert captured["protein_data"] is not None
 
 
 def test_render_accepts_molecule(caffeine):

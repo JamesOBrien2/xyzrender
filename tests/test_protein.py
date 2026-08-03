@@ -99,6 +99,22 @@ _HETATM_CLASS_PDB = dedent("""\
     END
 """)
 
+_MODIFIED_POLYMER_PDB = dedent("""\
+    MODRES 1ABC MSE A   2  MET  SELENOMETHIONINE
+    ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N
+    ATOM      2  CA  ALA A   1       1.456   0.000   0.000  1.00  0.00           C
+    ATOM      3  C   ALA A   1       2.800   0.000   0.000  1.00  0.00           C
+    HETATM    4  N   MSE A   2       3.700   0.000   0.000  1.00  0.00           N
+    HETATM    5  CA  MSE A   2       5.100   0.000   0.000  1.00  0.00           C
+    HETATM    6  C   MSE A   2       6.500   0.000   0.000  1.00  0.00           C
+    HETATM    7  CB  MSE A   2       5.100   1.500   0.000  1.00  0.00           C
+    HETATM    8  SE  MSE A   2       5.100   3.400   0.000  1.00  0.00          SE
+    ATOM      9  N   GLY A   3       7.400   0.000   0.000  1.00  0.00           N
+    ATOM     10  CA  GLY A   3       8.800   0.000   0.000  1.00  0.00           C
+    ATOM     11  C   GLY A   3      10.200   0.000   0.000  1.00  0.00           C
+    END
+""")
+
 # Two-chain PDB
 _TWO_CHAIN_PDB = dedent("""\
     ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N
@@ -361,6 +377,18 @@ def test_parse_pdb_hetatm_ligand_water_ion_indices(hetatm_class_pdb):
     assert pd.ligand_indices == {4}
 
 
+def test_parse_pdb_modres_hetatm_stays_in_polymer_chain(tmp_path):
+    """MODRES-labelled HETATM residues remain part of the protein polymer."""
+    path = tmp_path / "modified.pdb"
+    path.write_text(_MODIFIED_POLYMER_PDB)
+
+    pd = _require_protein_data(parse_pdb(path).protein_data)
+    assert [res.res_name for res in pd.chains["A"].residues] == ["ALA", "MSE", "GLY"]
+    assert set(pd.chains["A"].residues[1].atom_indices) == {3, 4, 5, 6, 7}
+    assert not ({3, 4, 5, 6, 7} & pd.hetatm_indices)
+    assert not ({3, 4, 5, 6, 7} & pd.ligand_indices)
+
+
 def test_parse_pdb_two_chains(two_chain_pdb):
     data = parse_pdb(two_chain_pdb)
     pd = data.protein_data
@@ -453,6 +481,90 @@ def test_ribbon_sheet_produces_polygons(sheet_pdb):
     items = ribbon_svg_items(pd, cfg, pos, 50.0, 0.0, 0.0, 800, 800)
     all_svg = " ".join(line for _, lines in items for line in lines)
     assert "<polygon" in all_svg
+
+
+def test_narrow_strand_ribbon_fits_canvas():
+    """Ribbon width and the sheet arrowhead must contribute to canvas fitting."""
+    import re
+
+    import numpy as np
+
+    from xyzrender.renderer import render_svg
+    from xyzrender.types import RenderConfig
+
+    graph = nx.Graph()
+    for i, (symbol, position) in enumerate(
+        (
+            ("C", (0.0, 0.0, 0.0)),
+            ("C", (0.0, 4.0, 0.0)),
+            ("C", (0.0, 8.0, 0.0)),
+            ("C", (0.0, 12.0, 0.0)),
+            ("O", (1.0, 0.0, 0.0)),
+            ("O", (1.0, 4.0, 0.0)),
+            ("O", (1.0, 8.0, 0.0)),
+            ("O", (1.0, 12.0, 0.0)),
+        )
+    ):
+        graph.add_node(i, symbol=symbol, position=np.array(position))
+    protein_data = ProteinData(
+        chains={
+            "A": ChainData(
+                "A",
+                [
+                    ResidueData("ALA", 1, "A", [0, 4], ca_index=0, c_index=None, o_index=4, n_index=None, ss_type="E"),
+                    ResidueData("ALA", 2, "A", [1, 5], ca_index=1, c_index=None, o_index=5, n_index=None, ss_type="E"),
+                    ResidueData("ALA", 3, "A", [2, 6], ca_index=2, c_index=None, o_index=6, n_index=None, ss_type="E"),
+                    ResidueData("ALA", 4, "A", [3, 7], ca_index=3, c_index=None, o_index=7, n_index=None, ss_type="E"),
+                ],
+            )
+        },
+        hetatm_indices=set(),
+        backbone_indices=set(range(8)),
+        sidechain_indices=set(),
+        helix_spans=[],
+        sheet_spans=[],
+    )
+
+    svg = str(render_svg(graph, RenderConfig(protein=True, auto_orient=False), protein_data=protein_data))
+    view_box = re.search(r'viewBox="0 0 (\d+) (\d+)"', svg)
+    assert view_box is not None
+    width, height = map(float, view_box.groups())
+    assert "<polygon" in svg
+    vertices = [
+        float(value)
+        for points in re.findall(r'<polygon points="([^"]+)"', svg)
+        for point in points.split()
+        for value in point.split(",")
+    ]
+    assert all(0 <= x <= width for x in vertices[::2])
+    assert all(0 <= y <= height for y in vertices[1::2])
+
+
+def test_surface_behind_ribbon_is_emitted_first(helix_pdb):
+    """Surface and ribbon items share one back-to-front depth ordering."""
+    from xyzrender.api import Molecule
+    from xyzrender.types import RenderConfig
+
+    loaded = load(helix_pdb)
+    protein_data = _require_protein_data(loaded.protein_data)
+    for atom in loaded.graph.nodes:
+        x, y, _ = loaded.graph.nodes[atom]["position"]
+        loaded.graph.nodes[atom]["position"] = (x, y, 10.0)
+
+    cfg = RenderConfig(
+        protein=True,
+        auto_orient=False,
+        pore_spheres=True,
+        pore_node_ids=[[0, 1, 2]],
+        pore_centroids=[(0.0, 0.0, 5.0)],
+        pore_radii=[1.0],
+    )
+    svg = str(render(Molecule(loaded.graph, protein_data=protein_data), config=cfg))
+    import re
+
+    pore = re.search(r'<circle[^>]+fill="url\(#[^"]*pore_', svg)
+    assert pore is not None
+    assert pore.start() < svg.index("<polygon")
 
 
 def test_ribbon_two_chains_distinct_colors(two_chain_pdb):
@@ -704,6 +816,197 @@ def test_protein_mode_keeps_nci_dotted_edges_when_backbone_hidden():
     mol = Molecule(graph=g, protein_data=pd)
     svg = str(render(mol, protein=True, orient=False))
     assert "stroke-dasharray" in svg
+
+
+def test_protein_mode_keeps_backbone_nci_without_revealing_atoms():
+    """Backbone contacts remain dotted overlays without duplicating cartoon atoms."""
+    g = nx.Graph()
+    for idx in range(3):
+        g.add_node(idx, symbol="C", position=(float(idx) * 1.4, 0.0, 0.0))
+    g.add_node(3, symbol="O", position=(0.0, 1.4, 0.0))
+    g.add_edge(0, 1)
+    g.add_edge(1, 2)
+    g.add_edge(0, 3, NCI=True)
+
+    residues = [
+        ResidueData(
+            res_name="ALA",
+            res_seq=idx + 1,
+            chain_id="A",
+            atom_indices=[idx],
+            ca_index=idx,
+            c_index=None,
+            o_index=None,
+            n_index=None,
+            ss_type="C",
+        )
+        for idx in range(3)
+    ]
+    pd = ProteinData(
+        chains={"A": ChainData(chain_id="A", residues=residues)},
+        hetatm_indices={3},
+        backbone_indices={0, 1, 2},
+        sidechain_indices=set(),
+        helix_spans=[],
+        sheet_spans=[],
+        ligand_indices={3},
+        trace_chains={"A": [0, 1, 2]},
+    )
+    from xyzrender.api import Molecule
+
+    svg = str(render(Molecule(graph=g, protein_data=pd), protein=True, orient=False))
+    assert "stroke-dasharray" in svg
+    assert svg.count("<circle") == 1
+
+    excluded = str(render(Molecule(graph=g, protein_data=pd), protein=True, exclude_chains="A", orient=False))
+    assert "stroke-dasharray" not in excluded
+
+
+def test_protein_mode_keeps_nci_between_two_hidden_backbone_atoms():
+    """Hidden cartoon atoms do not suppress their NCI overlay."""
+    g = nx.Graph()
+    for idx in range(4):
+        g.add_node(idx, symbol="C", position=(float(idx) * 1.4, 0.0, 0.0))
+    g.add_edges_from([(0, 1), (1, 2), (2, 3)])
+    g.add_edge(0, 3, NCI=True)
+
+    residues = [ResidueData("ALA", idx + 1, "A", [idx], idx, None, None, None, "C") for idx in range(4)]
+    pd = ProteinData(
+        chains={"A": ChainData(chain_id="A", residues=residues)},
+        hetatm_indices=set(),
+        backbone_indices={0, 1, 2, 3},
+        sidechain_indices=set(),
+        helix_spans=[],
+        sheet_spans=[],
+        trace_chains={"A": [0, 1, 2, 3]},
+    )
+    from xyzrender.api import Molecule
+
+    molecule = Molecule(graph=g, protein_data=pd)
+    svg = str(render(molecule, protein=True, orient=False))
+    assert "stroke-dasharray" in svg
+    assert "<circle" not in svg
+
+    excluded = str(render(molecule, protein=True, exclude_chains="A", orient=False))
+    assert "stroke-dasharray" not in excluded
+
+
+def test_protein_mode_treats_backbone_bound_hydrogen_as_backbone_contact():
+    """A backbone N-H contact must not reveal an unrelated residue sidechain."""
+    g = nx.Graph()
+    g.add_node(0, symbol="N", position=(0.0, 0.0, 0.0))
+    g.add_node(1, symbol="H", position=(0.0, 0.8, 0.0))
+    g.add_node(2, symbol="C", position=(0.8, 0.0, 0.0))
+    g.add_node(3, symbol="C", position=(1.4, 0.0, 0.0))
+    g.add_node(4, symbol="C", position=(2.8, 0.0, 0.0))
+    g.add_node(5, symbol="O", position=(0.0, 2.2, 0.0))
+    g.add_edge(0, 1)
+    g.add_edge(0, 2)
+    g.add_edge(0, 3)
+    g.add_edge(3, 4)
+    g.add_edge(1, 5, NCI=True)
+
+    residues = [
+        ResidueData("ASP", 1, "A", [0, 1, 2], 0, None, None, 0, "C"),
+        ResidueData("ALA", 2, "A", [3], 3, None, None, None, "C"),
+        ResidueData("ALA", 3, "A", [4], 4, None, None, None, "C"),
+    ]
+    pd = ProteinData(
+        chains={"A": ChainData(chain_id="A", residues=residues)},
+        hetatm_indices={5},
+        backbone_indices={0, 3, 4},
+        # PDB name-based semantics put added hydrogens in this set; the
+        # covalent parent is needed to recognise H1 as backbone-attached.
+        sidechain_indices={1, 2},
+        helix_spans=[],
+        sheet_spans=[],
+        ligand_indices={5},
+        trace_chains={"A": [0, 3, 4]},
+    )
+    from xyzrender.api import Molecule
+
+    svg = str(render(Molecule(graph=g, protein_data=pd), protein=True, orient=False))
+    assert "stroke-dasharray" in svg
+    assert svg.count("<circle") == 1
+
+
+def test_protein_mode_resolves_sidechain_centroid_context_and_exclusion():
+    """Aromatic centroids inherit sidechain context and excluded-chain ownership."""
+    g = nx.Graph()
+    g.add_node(0, symbol="C", position=(0.0, 0.8, 0.0))
+    g.add_node(1, symbol="C", position=(0.8, 0.8, 0.0))
+    g.add_node(2, symbol="O", position=(0.4, 2.2, 0.0))
+    g.add_node(3, symbol="*", position=(0.4, 0.8, 0.0))
+    g.add_node(4, symbol="C", position=(0.0, 0.0, 0.0))
+    g.add_node(5, symbol="C", position=(1.4, 0.0, 0.0))
+    g.add_node(6, symbol="C", position=(2.8, 0.0, 0.0))
+    g.add_edge(0, 1)
+    g.add_edge(0, 4)
+    g.add_edge(4, 5)
+    g.add_edge(5, 6)
+    g.add_edge(2, 3, NCI=True)
+    g.graph["nci_centroid_sites"] = {3: (0, 1)}
+
+    residues = [
+        ResidueData("PHE", 1, "A", [0, 1, 4], 4, None, None, None, "C"),
+        ResidueData("ALA", 2, "A", [5], 5, None, None, None, "C"),
+        ResidueData("ALA", 3, "A", [6], 6, None, None, None, "C"),
+    ]
+    pd = ProteinData(
+        chains={"A": ChainData(chain_id="A", residues=residues)},
+        hetatm_indices={2},
+        backbone_indices={4, 5, 6},
+        sidechain_indices={0, 1},
+        helix_spans=[],
+        sheet_spans=[],
+        ligand_indices={2},
+        trace_chains={"A": [4, 5, 6]},
+        het_chains={"L": {2}},
+    )
+    from xyzrender.api import Molecule
+
+    molecule = Molecule(graph=g, protein_data=pd)
+    svg = str(render(molecule, protein=True, orient=False))
+    assert "stroke-dasharray" in svg
+    assert svg.count("<circle") == 4
+
+    excluded = str(render(molecule, protein=True, exclude_chains="A", orient=False))
+    assert "stroke-dasharray" not in excluded
+    assert excluded.count("<circle") == 1
+
+
+def test_protein_mode_reveals_sidechain_without_backbone_overlap_for_nci():
+    """NCI context shows the sidechain moiety without duplicating cartoon backbone."""
+    g = nx.Graph()
+    for idx, position in enumerate(((0.0, 0.0, 0.0), (0.0, 0.8, 0.0), (1.4, 0.0, 0.0), (2.8, 0.0, 0.0))):
+        g.add_node(idx, symbol="C", position=position)
+    g.add_node(4, symbol="O", position=(0.0, 2.2, 0.0))
+    g.add_edge(0, 1)
+    g.add_edge(0, 2)
+    g.add_edge(2, 3)
+    g.add_edge(1, 4, NCI=True)
+
+    residues = [
+        ResidueData("ALA", 1, "A", [0, 1], 0, None, None, None, "C"),
+        ResidueData("ALA", 2, "A", [2], 2, None, None, None, "C"),
+        ResidueData("ALA", 3, "A", [3], 3, None, None, None, "C"),
+    ]
+    pd = ProteinData(
+        chains={"A": ChainData(chain_id="A", residues=residues)},
+        hetatm_indices={4},
+        backbone_indices={0, 2, 3},
+        sidechain_indices={1},
+        helix_spans=[],
+        sheet_spans=[],
+        ligand_indices={4},
+        trace_chains={"A": [0, 2, 3]},
+    )
+    from xyzrender.api import Molecule
+
+    svg = str(render(Molecule(graph=g, protein_data=pd), protein=True, orient=False, axes=False, no_cell=True))
+    assert "stroke-dasharray" in svg
+    assert svg.count("<circle") == 2
+    assert any("<line" in line and "stroke-dasharray" not in line for line in svg.splitlines())
 
 
 def test_filter_ligand_protein_nci_keeps_ligand_protein_components():
@@ -994,6 +1297,12 @@ def test_ribbon_emits_no_gradient_defs(helix_pdb):
     assert "rg_e_" not in svg
 
 
+@pytest.mark.parametrize(("dimension", "value"), [("ribbon_width", 0.0), ("loop_width", -0.5)])
+def test_nonpositive_ribbon_dimensions_are_rejected(helix_pdb, dimension, value):
+    with pytest.raises(ValueError, match=r"ribbon_width|loop_width"):
+        render(load(helix_pdb), protein=True, orient=False, **{dimension: value})
+
+
 def test_ribbon_default_width_matches_helix_pitch():
     """Default tape width is near the ~5.4 A helix rise, so turns nearly close up."""
     from xyzrender.types import RenderConfig
@@ -1016,9 +1325,11 @@ def test_chain_color_reaches_the_ribbon(two_chain_pdb):
 
 def test_exclude_chain_removes_its_geometry(two_chain_pdb):
     """Excluding a chain drops its quads (and shrinks the emitted SVG)."""
-    kw = {"protein": True, "chain_colors": {"A": "steelblue", "B": "red"}, "orient": False}
-    svg_all = str(render(load(two_chain_pdb), **kw))
-    svg_excl = str(render(load(two_chain_pdb), exclude_chains="B", **kw))
+    chain_colors = {"A": "steelblue", "B": "red"}
+    svg_all = str(render(load(two_chain_pdb), protein=True, chain_colors=chain_colors, orient=False))
+    svg_excl = str(
+        render(load(two_chain_pdb), protein=True, chain_colors=chain_colors, exclude_chains="B", orient=False)
+    )
     assert svg_excl.count("<polygon") < svg_all.count("<polygon")
 
 
@@ -1031,9 +1342,8 @@ def test_exclude_chain_removes_its_ligand(tmp_path):
     p = tmp_path / "two_chain_lig.pdb"
     p.write_text(_TWO_CHAIN_PDB.replace("END\n", "") + _LIGAND_ON_B + "END\n")
     mol = load(p)
-    kw = {"protein": True, "orient": False}
-    assert str(render(mol, **kw)).count("<circle") == 2  # the two LIG atoms
-    assert str(render(mol, exclude_chains="B", **kw)).count("<circle") == 0
+    assert str(render(mol, protein=True, orient=False)).count("<circle") == 2  # the two LIG atoms
+    assert str(render(mol, protein=True, exclude_chains="B", orient=False)).count("<circle") == 0
 
 
 def test_exclude_chain_does_not_recolour_the_others(two_chain_pdb):
@@ -1045,7 +1355,6 @@ def test_exclude_chain_does_not_recolour_the_others(two_chain_pdb):
     """
     import re
 
-    kw = {"protein": True, "orient": False}
     mol = load(two_chain_pdb)
 
     def fills(svg):
@@ -1054,7 +1363,9 @@ def test_exclude_chain_does_not_recolour_the_others(two_chain_pdb):
     # The fixture's chains are translated copies, so their shade sets differ
     # only by base colour.  Filtering before allocation gave whichever chain
     # survived palette[0], making these two renders identical.
-    assert fills(str(render(mol, exclude_chains="A", **kw))) != fills(str(render(mol, exclude_chains="B", **kw)))
+    exclude_a = str(render(mol, protein=True, exclude_chains="A", orient=False))
+    exclude_b = str(render(mol, protein=True, exclude_chains="B", orient=False))
+    assert fills(exclude_a) != fills(exclude_b)
 
 
 def test_lone_amino_acid_ligand_is_still_drawn(tmp_path):
@@ -1072,9 +1383,19 @@ def test_lone_amino_acid_ligand_is_still_drawn(tmp_path):
     )
     p.write_text(_TWO_CHAIN_PDB.replace("END\n", "") + lig + "END\n")
     sem = load(p).protein_semantics
+    assert sem is not None
     assert len(sem.ligand_indices) == 4
     assert not (sem.ligand_indices & sem.backbone_indices)
     assert str(render(load(p), protein=True, orient=False)).count("<circle") == 4
+
+
+def test_single_residue_protein_falls_back_to_ball_and_stick(tmp_path):
+    """A one-residue ATOM chain cannot earn a ribbon and must remain visible."""
+    p = tmp_path / "single_residue.pdb"
+    p.write_text(_HETATM_PDB)
+
+    svg = str(render(load(p), protein=True, orient=False, gradient=False))
+    assert svg.count("<circle") == 6
 
 
 def test_placeholder_cryst1_draws_no_cell():
@@ -1083,6 +1404,18 @@ def test_placeholder_cryst1_draws_no_cell():
 
     assert parse_pdb(STRUCTURES / "8UWL.pdb").pbc_cell is None
     assert parse_pdb(STRUCTURES / "water_cryst.pdb").pbc_cell is not None
+
+
+def test_invalid_cryst1_geometry_is_rejected(tmp_path):
+    """Degenerate unit cells fail at parsing rather than leaking NaNs."""
+    p = tmp_path / "invalid_cell.pdb"
+    p.write_text(
+        "CRYST1   10.000   10.000   10.000  90.00  90.00   0.00 P 1           1\n"
+        "ATOM      1  C   UNK A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+    )
+
+    with pytest.raises(ValueError, match="CRYST1"):
+        parse_pdb(p)
 
 
 def test_docked_ligand_without_conect_gets_bonds(tmp_path):
@@ -1103,6 +1436,34 @@ def test_docked_ligand_without_conect_gets_bonds(tmp_path):
     mol = load(p)
     lig_nodes = [n for n in mol.graph.nodes if n >= 16]
     assert sum(mol.graph.degree(n) for n in lig_nodes) > 0
+
+
+def test_ligand_conect_does_not_erase_polymer_bonds(tmp_path):
+    """Deposited HETATM connectivity must not leave protein sidechains loose."""
+    p = tmp_path / "partial_conect.pdb"
+    p.write_text(
+        dedent("""\
+            ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00 10.00           N
+            ATOM      2  CA  ALA A   1       1.456   0.000   0.000  1.00 10.00           C
+            ATOM      3  C   ALA A   1       1.930   0.000   1.463  1.00 10.00           C
+            ATOM      4  O   ALA A   1       1.160   0.000   2.421  1.00 10.00           O
+            ATOM      5  CB  ALA A   1       1.900   1.400  -0.300  1.00 10.00           C
+            ATOM      6  N   ALA A   2       3.241   0.000   1.742  1.00 10.00           N
+            ATOM      7  CA  ALA A   2       3.690   0.000   3.127  1.00 10.00           C
+            ATOM      8  C   ALA A   2       5.228   0.000   3.127  1.00 10.00           C
+            ATOM      9  O   ALA A   2       5.902   0.000   2.098  1.00 10.00           O
+            ATOM     10  CB  ALA A   2       3.200   1.400   3.500  1.00 10.00           C
+            HETATM   11  C1  LIG A 101       8.000   0.000   0.000  1.00 10.00           C
+            HETATM   12  O1  LIG A 101       9.200   0.000   0.000  1.00 10.00           O
+            CONECT   11   12
+            END
+        """)
+    )
+
+    mol = load(p)
+    assert mol.graph.has_edge(1, 4)  # CA-CB sidechain attachment
+    assert mol.graph.has_edge(2, 5)  # peptide C-N link
+    assert mol.graph.has_edge(6, 9)  # second CA-CB attachment
 
 
 def test_protein_load_does_not_warn_about_missing_bonds(caplog):
@@ -1372,6 +1733,7 @@ def test_altloc_keeps_one_conformer(tmp_path):
     assert len(data.atoms) == 3, "altLoc B should have been dropped"
     pd = _require_protein_data(data.protein_data)
     res = pd.chains["A"].residues[0]
+    assert res.ca_index is not None
     assert data.atoms[res.ca_index][1][1] == pytest.approx(0.0), "kept the wrong conformer"
 
 
@@ -1521,6 +1883,14 @@ def test_select_sidechain_atoms_rejects_garbage(two_chain_pdb):
     pd = _require_protein_data(load(two_chain_pdb).protein_data)
     with pytest.raises(ValueError, match="invalid residue selector"):
         select_sidechain_atoms(pd, "not-a-residue")
+
+
+def test_select_sidechain_atoms_rejects_empty_selector(two_chain_pdb):
+    from xyzrender.ribbon import select_sidechain_atoms
+
+    pd = _require_protein_data(load(two_chain_pdb).protein_data)
+    with pytest.raises(ValueError, match="residue selector must not be empty"):
+        select_sidechain_atoms(pd, " , ")
 
 
 def test_sidechain_selector_restricts_what_is_drawn(sidechain_pdb):

@@ -68,7 +68,29 @@ def _map_confidence_tier(value: Any) -> ProteinConfidence:
         return ProteinConfidence.FULL_RIBBON
     if raw == ProteinConfidence.TRACE_ONLY.value:
         return ProteinConfidence.TRACE_ONLY
-    return ProteinConfidence.INSUFFICIENT
+    if raw == ProteinConfidence.INSUFFICIENT.value:
+        return ProteinConfidence.INSUFFICIENT
+    raise ValueError(f"unknown protein confidence tier {raw!r}")
+
+
+def _parse_spans(value: Any, *, field_name: str) -> list[tuple[str, int, int]]:
+    spans: list[tuple[str, int, int]] = []
+    try:
+        entries = list(value)
+    except TypeError as exc:
+        raise ValueError(f"{field_name} must be a sequence of (chain, start, end) spans") from exc
+    for entry in entries:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 3:
+            raise ValueError(f"{field_name} entries must be (chain, start, end) triples")
+        chain, start_raw, end_raw = entry
+        try:
+            start, end = int(start_raw), int(end_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field_name} start/end values must be integers") from exc
+        if start > end:
+            raise ValueError(f"{field_name} start must not exceed end")
+        spans.append((str(chain), start, end))
+    return spans
 
 
 def _getter(obj: Any) -> Callable[..., Any]:
@@ -127,8 +149,8 @@ def _to_xyzrender_semantics(xg_sem: Any) -> ProteinSemantics:
         hetatm_indices={int(i) for i in get_top("hetatm_indices", set())},
         backbone_indices={int(i) for i in get_top("backbone_indices", set())},
         sidechain_indices={int(i) for i in get_top("sidechain_indices", set())},
-        helix_spans=[(str(c), int(s), int(e)) for c, s, e in get_top("helix_spans", [])],
-        sheet_spans=[(str(c), int(s), int(e)) for c, s, e in get_top("sheet_spans", [])],
+        helix_spans=_parse_spans(get_top("helix_spans", []), field_name="helix_spans"),
+        sheet_spans=_parse_spans(get_top("sheet_spans", []), field_name="sheet_spans"),
         ligand_indices={int(i) for i in get_top("ligand_indices", set())},
         water_indices={int(i) for i in get_top("water_indices", set())},
         ion_indices={int(i) for i in get_top("ion_indices", set())},
@@ -317,14 +339,19 @@ def _parse_extxyz_properties(comment: str) -> dict[str, tuple[int, int]] | None:
         return None
     spec = m.group(1)
     toks = spec.split(":")
-    if len(toks) < 3:
+    if len(toks) < 3 or len(toks) % 3:
         return None
     props: dict[str, tuple[int, int]] = {}
     col = 0
     i = 0
     while i + 2 < len(toks):
         name = toks[i]
-        count = int(toks[i + 2])
+        try:
+            count = int(toks[i + 2])
+        except ValueError:
+            return None
+        if count <= 0:
+            return None
         props[name] = (col, count)
         col += count
         i += 3

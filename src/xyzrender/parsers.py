@@ -483,9 +483,22 @@ def _abc_angles_to_cell(a: float, b: float, c: float, alpha: float, beta: float,
     numpy.ndarray
         Shape ``(3, 3)`` float array; rows are **a**, **b**, **c** vectors.
     """
+    parameters = np.array([a, b, c, alpha, beta, gamma], dtype=float)
+    if (
+        not np.isfinite(parameters).all()
+        or min(a, b, c) <= 0
+        or not all(0 < angle < 180 for angle in (alpha, beta, gamma))
+    ):
+        msg = "invalid CRYST1 geometry: lengths must be positive and angles must lie between 0 and 180 degrees"
+        raise ValueError(msg)
+
     ar, br, gr = np.radians(alpha), np.radians(beta), np.radians(gamma)
     ca, cb, cg = np.cos(ar), np.cos(br), np.cos(gr)
     sg = np.sin(gr)
+    volume_factor = 1.0 + 2.0 * ca * cb * cg - ca**2 - cb**2 - cg**2
+    if abs(sg) <= 1e-12 or volume_factor <= 1e-12:
+        msg = "invalid CRYST1 geometry: unit cell is degenerate"
+        raise ValueError(msg)
 
     ax = a
     bx = b * cg
@@ -493,17 +506,24 @@ def _abc_angles_to_cell(a: float, b: float, c: float, alpha: float, beta: float,
     cx = c * cb
     cy = c * (ca - cb * cg) / sg
     cz_sq = c**2 - cx**2 - cy**2
-    cz = float(np.sqrt(max(cz_sq, 0.0)))
+    if cz_sq <= 1e-12:
+        msg = "invalid CRYST1 geometry: unit cell volume is zero"
+        raise ValueError(msg)
+    cz = float(np.sqrt(cz_sq))
 
-    return np.array([[ax, 0.0, 0.0], [bx, by, 0.0], [cx, cy, cz]], dtype=float)
+    cell = np.array([[ax, 0.0, 0.0], [bx, by, 0.0], [cx, cy, cz]], dtype=float)
+    if not np.isfinite(cell).all():
+        msg = "invalid CRYST1 geometry: non-finite lattice vectors"
+        raise ValueError(msg)
+    return cell
 
 
 _BACKBONE_ATOM_NAMES = frozenset({"N", "CA", "C", "O", "OXT"})
 
 # altLoc values (col 17) that are kept.  Blank means "no alternate conformer";
 # "A" is the conventional first/highest-occupancy alternate.  Keeping every
-# altLoc would put two atoms at the same residue key, and the residue's CA
-# would silently become whichever came last.
+# atoms at the same residue key, and the residue's CA would silently become
+# whichever came last.
 _KEPT_ALTLOCS = frozenset({"", "A"})
 
 
@@ -601,6 +621,7 @@ def parse_pdb(path: str | Path) -> MolData:
     # Secondary structure spans
     helix_spans: list[tuple[str, int, int]] = []
     sheet_spans: list[tuple[str, int, int]] = []
+    modified_polymer_residues: set[tuple[str, int, str, str]] = set()
 
     has_chain_info = False  # set True when we see chain IDs
     # Multi-model files (NMR ensembles) hold the same molecule many times over.
@@ -690,10 +711,11 @@ def parse_pdb(path: str | Path) -> MolData:
                 alpha = float(ln[33:40])
                 beta = float(ln[40:47])
                 gamma = float(ln[47:54])
-                if not _is_placeholder_cryst1(a, b, c, alpha, beta, gamma):
-                    pbc_cell = _abc_angles_to_cell(a, b, c, alpha, beta, gamma)
-            except (ValueError, IndexError):
-                pass
+            except (ValueError, IndexError) as exc:
+                msg = "invalid CRYST1 record: expected numeric lengths and angles"
+                raise ValueError(msg) from exc
+            if not _is_placeholder_cryst1(a, b, c, alpha, beta, gamma):
+                pbc_cell = _abc_angles_to_cell(a, b, c, alpha, beta, gamma)
 
         elif rec == "HELIX":
             # HELIX  seqNum helixID initResName initChainID initSeqNum ...
@@ -719,9 +741,33 @@ def parse_pdb(path: str | Path) -> MolData:
             except (ValueError, IndexError):
                 pass
 
+        elif rec == "MODRES":
+            # MODRES identifies a HETATM residue that belongs to the polymer,
+            # such as selenomethionine (MSE).  Preserve arbitrary hetero
+            # ligands as HETATM; only the exact chain/residue named here is
+            # promoted into the protein residue sequence.
+            try:
+                res_name = ln[12:15].strip()
+                chain_id = ln[16].strip() if len(ln) > 16 else ""
+                res_seq = int(ln[18:22])
+                i_code = ln[22].strip() if len(ln) > 22 else ""
+            except (ValueError, IndexError):
+                continue
+            if res_name:
+                modified_polymer_residues.add(_residue_key(chain_id, res_seq, i_code, res_name))
+
         elif rec in ("COMPND", "HEADER"):
             if not name:
                 name = ln[10:].strip()
+
+    if modified_polymer_residues:
+        atom_meta = [
+            atom._replace(record="ATOM")
+            if atom.record == "HETATM"
+            and _residue_key(atom.chain_id, atom.res_seq, atom.i_code, atom.res_name) in modified_polymer_residues
+            else atom
+            for atom in atom_meta
+        ]
 
     # Build bond list from CONECT data (deduplicate by storing only i < j)
     bonds: list[tuple[int, int, float]] | None = None
