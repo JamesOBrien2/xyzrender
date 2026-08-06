@@ -57,8 +57,10 @@ echo "=== Protein ribbon + ligand/NCI showcase ==="
 xyzrender "$DIR/8UWL.pdb" --protein gloss --exclude-chains "A,B,D,E" --no-orient -o "$IMG/protein_gloss.svg"
 xyzrender "$DIR/8UWL.pdb" --protein illustration --exclude-chains "A,B,D,E" --no-orient -o "$IMG/protein_illustration.svg"
 xyzrender "$DIR/8UWL.pdb" --protein --exclude-chains "B,C,D,E" --highlight-ligand --ligand-color "#ff9f45" --no-orient -o "$IMG/protein_highlight_ligand.svg"
-xyzrender "$DIR/protein_ligand.pdb" --protein --nci-ligand --no-orient -o "$IMG/protein_nci_ligand.svg"
-xyzrender "$DIR/protein_ligand.pdb" --protein --nci-ligand --nci-color teal --no-orient -o "$IMG/protein_nci_ligand_custom_color.svg"
+# 1STP is pre-oriented down the barrel so the biotin site faces the viewer;
+# see the REMARK block in the fixture for how it was derived from the RCSB entry.
+xyzrender "$DIR/1STP.pdb" --protein --nci-ligand --no-orient -o "$IMG/protein_nci_ligand.svg"
+xyzrender "$DIR/1STP.pdb" --protein --nci-ligand --nci-color teal --no-orient -o "$IMG/protein_nci_ligand_custom_color.svg"
 
 echo "=== TS and NCI options ==="
 xyzrender "$DIR/sn2.out" --ts-bond "1-2" -o "$IMG/sn2_ts_man.svg"
@@ -160,7 +162,7 @@ echo "=== Depth of field ==="
 xyzrender "$DIR/caffeine.xyz" --dof --no-orient -o "$IMG/caffeine_dof.svg" --gif-rot -go "$IMG/caffeine_dof.gif" 
 
 echo "=== Glow ==="
-xyzrender "$DIR/caffeine.xyz" --glow "N,O" --glow-strength 4 -o "$IMG/caffeine_glow.svg"
+xyzrender "$DIR/caffeine.xyz" --glow "N,O" --glow-strength 2 -o "$IMG/caffeine_glow.svg"
 
 echo "=== Overlays ==="
 xyzrender "$DIR/isothio_xtb.xyz" --overlay "$DIR/isothio_uma.xyz" -c 1 --hy -o "$IMG/isothio_overlay.svg" --gif-rot -go "$IMG/isothio_overlay.gif"
