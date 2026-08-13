@@ -488,7 +488,7 @@ def _adaptive_centerline(
         present = [i for i in kept if lo_i <= i <= hi_i]
         j = 1
         while len(present) < min_pts:
-            idx = int(round(lo_i + j * (hi_i - lo_i) / (min_pts - 1)))
+            idx = round(lo_i + j * (hi_i - lo_i) / (min_pts - 1))
             idx = min(max(idx, lo_i + 1), hi_i - 1)
             if idx not in kept:
                 kept.add(idx)

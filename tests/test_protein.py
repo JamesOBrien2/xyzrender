@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
 from pathlib import Path
 from textwrap import dedent
 
@@ -1777,7 +1778,8 @@ def test_adaptive_centerline_curvature_response():
     n_curved_100 = kept_count(helix, 100.0, ["H"] * n)
     n_curved_200 = kept_count(helix, 200.0, ["H"] * n)
     assert n_curved_50 > floor, "curvature must add samples above the floor"
-    assert n_curved_100 > n_curved_50 and n_curved_200 > n_curved_100, "density must scale with projected size"
+    assert n_curved_100 > n_curved_50, "density must scale with projected size"
+    assert n_curved_200 > n_curved_100, "density must scale with projected size"
 
     # Projected chord error bound: for every kept interval, the fine polyline
     # between its endpoints stays within the pixel tolerance of the chord.
@@ -1785,7 +1787,7 @@ def test_adaptive_centerline_curvature_response():
     fine = _catmull_rom_3d(helix, 7 * 4)
     kept_idx = [int(np.argmin(np.abs(fine - c).sum(axis=1))) for c in centers]
     px, py = fine[:, 0] * 100.0, fine[:, 1] * 100.0
-    for a_i, b_i in zip(kept_idx[:-1], kept_idx[1:]):
+    for a_i, b_i in pairwise(kept_idx):
         if b_i - a_i <= 1:
             continue
         seg = np.arange(a_i + 1, b_i)
