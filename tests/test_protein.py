@@ -1678,6 +1678,128 @@ def test_short_strand_still_renders(tmp_path):
     assert hw.max() > 0
 
 
+def test_arrowhead_plateau_then_constant_angle_taper():
+    """The strand arrowhead is a flange plateau followed by a linear taper.
+
+    The widest ring must be a real *head* (a plateau, not one spline row),
+    then the width must fall linearly -- a constant-angle taper -- to a small
+    tip fraction at the final residue.  The two pieces meet continuously.
+    """
+    import numpy as np
+
+    from xyzrender.ribbon import _ARROW_FLANGE, _ARROW_HEAD_FRAC, _ARROW_TIP_FRAC, _sample_widths
+
+    dims = {"H": (2.0, 0.3), "E": (2.0, 0.3), "C": (0.4, 0.4)}
+    res_t = np.linspace(0, 7, 2001)
+    hw, _, _ = _sample_widths(["E"] * 8, res_t, dims)
+    body = dims["E"][0]
+    # Isolate the final residue interval, parameterised 0..1.
+    sel = np.logical_and(res_t >= 6.0, res_t <= 7.0)
+    frac = res_t[sel] - 6.0
+    w = hw[sel]
+    # Plateau: full flange width for the first _ARROW_HEAD_FRAC of the interval.
+    plateau = w[frac <= _ARROW_HEAD_FRAC + 1e-9]
+    assert np.allclose(plateau, body * _ARROW_FLANGE, rtol=1e-6, atol=1e-9)
+    # Tip: the strand terminus tapers almost to a point.
+    assert np.isclose(w[-1], body * _ARROW_TIP_FRAC, rtol=1e-6, atol=1e-9)
+    assert w[-1] < body * 0.5, "strand does not taper to a point"
+    # Taper: exactly linear between the plateau edge and the tip fraction.
+    t = np.clip((frac - _ARROW_HEAD_FRAC) / max(1.0 - _ARROW_HEAD_FRAC, 1e-9), 0.0, 1.0)
+    expected = body * (_ARROW_FLANGE * (1.0 - t) + _ARROW_TIP_FRAC * t)
+    assert np.allclose(w, expected, rtol=1e-6, atol=1e-9)
+
+
+def test_arrowhead_terminus_widths_unchanged_at_residues():
+    """Widths at integer residue parameters are exact flange/tip values.
+
+    The plateau is defined on the final residue interval only, so the
+    penultimate residue reads the full flange and the last residue the tip --
+    the same values the sidechain-anchor solve and the canvas fit margin rely
+    on.  Interior residue parameters must be untouched by the arrowhead.
+    """
+    import numpy as np
+
+    from xyzrender.ribbon import _ARROW_FLANGE, _ARROW_TIP_FRAC, _sample_widths
+
+    dims = {"H": (2.0, 0.3), "E": (2.0, 0.3), "C": (0.4, 0.4)}
+    res_t = np.arange(8, dtype=float)
+    hw, _, _ = _sample_widths(["E"] * 8, res_t, dims)
+    body = dims["E"][0]
+    assert np.isclose(hw[-2], body * _ARROW_FLANGE, rtol=1e-6, atol=1e-9)
+    assert np.isclose(hw[-1], body * _ARROW_TIP_FRAC, rtol=1e-6, atol=1e-9)
+    # Interior residues keep the plain sheet half-width.
+    assert np.allclose(hw[:-2], body, rtol=1e-6, atol=1e-9)
+
+
+def test_adaptive_centerline_is_deterministic():
+    """Identical inputs must give identical samples, including on curved runs."""
+    import numpy as np
+
+    from xyzrender.ribbon import _adaptive_centerline
+
+    dims = {"H": (2.0, 0.3), "E": (2.0, 0.3), "C": (0.4, 0.4)}
+    n = 12
+    k = 2.0 * np.pi / 3.6
+    i = np.arange(n)
+    helix = np.column_stack([2.3 * np.cos(k * i), 2.3 * np.sin(k * i), 1.5 * i])
+    c1, t1 = _adaptive_centerline(helix, 7, scale=100.0, dims=dims, ss=["H"] * n)
+    c2, t2 = _adaptive_centerline(helix, 7, scale=100.0, dims=dims, ss=["H"] * n)
+    assert c1.shape == c2.shape
+    assert np.array_equal(c1, c2)
+    assert np.array_equal(t1, t2)
+
+
+def test_adaptive_centerline_curvature_response():
+    """Density follows projected curvature, with a bounded chord error.
+
+    A curved run keeps more samples than a straight run of the same length at
+    the same scale, and the sample count grows as the projected size grows.
+    Every kept interval's projected chord error stays under the pixel
+    tolerance, and every residue control point is anchored in the output.
+    """
+    import numpy as np
+
+    from xyzrender.ribbon import _ADAPTIVE_TOL_PX, _adaptive_centerline, _catmull_rom_3d
+
+    dims = {"H": (2.0, 0.3), "E": (2.0, 0.3), "C": (0.4, 0.4)}
+    n = 12
+    k = 2.0 * np.pi / 3.6
+    i = np.arange(n)
+    helix = np.column_stack([2.3 * np.cos(k * i), 2.3 * np.sin(k * i), 1.5 * i])
+    straight = np.column_stack([np.arange(n, dtype=float), np.zeros(n), np.zeros(n)])
+
+    def kept_count(trace, scale, ss):
+        return len(_adaptive_centerline(trace, 7, scale=scale, dims=dims, ss=ss)[0])
+
+    floor = 1 + (n - 1) * 5  # min 5 intervals per residue span
+    assert kept_count(straight, 100.0, ["E"] * n) == floor
+    n_curved_50 = kept_count(helix, 50.0, ["H"] * n)
+    n_curved_100 = kept_count(helix, 100.0, ["H"] * n)
+    n_curved_200 = kept_count(helix, 200.0, ["H"] * n)
+    assert n_curved_50 > floor, "curvature must add samples above the floor"
+    assert n_curved_100 > n_curved_50 and n_curved_200 > n_curved_100, "density must scale with projected size"
+
+    # Projected chord error bound: for every kept interval, the fine polyline
+    # between its endpoints stays within the pixel tolerance of the chord.
+    centers, res_t = _adaptive_centerline(helix, 7, scale=100.0, dims=dims, ss=["H"] * n)
+    fine = _catmull_rom_3d(helix, 7 * 4)
+    kept_idx = [int(np.argmin(np.abs(fine - c).sum(axis=1))) for c in centers]
+    px, py = fine[:, 0] * 100.0, fine[:, 1] * 100.0
+    for a_i, b_i in zip(kept_idx[:-1], kept_idx[1:]):
+        if b_i - a_i <= 1:
+            continue
+        seg = np.arange(a_i + 1, b_i)
+        dx = px[b_i] - px[a_i]
+        dy = py[b_i] - py[a_i]
+        chord = np.hypot(dx, dy)
+        dev = np.abs((px[seg] - px[a_i]) * dy - (py[seg] - py[a_i]) * dx) / chord
+        assert dev.max() <= _ADAPTIVE_TOL_PX + 1e-9, "kept interval exceeds the projected-error tolerance"
+
+    # Every residue control point is anchored in the kept samples.
+    for r in range(n):
+        assert np.isclose(res_t, float(r)).any(), f"residue control point {r} missing from kept samples"
+
+
 # ---------------------------------------------------------------------------
 # PDB record handling: MODEL / altLoc / insertion codes / tempFactor
 # ---------------------------------------------------------------------------

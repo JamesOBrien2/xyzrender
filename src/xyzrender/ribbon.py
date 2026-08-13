@@ -16,7 +16,11 @@ The backbone of each chain segment is turned into a *swept surface*:
 2. The centreline is splined **once per backbone segment** (centripetal
    Catmull-Rom) and the frame is interpolated onto the same samples.  Splining
    per secondary-structure run instead would leave a tangent discontinuity at
-   every H/E/C boundary.
+   every H/E/C boundary.  Along-ribbon sampling is adaptive: the spline is
+   evaluated on a fine grid and decimated so that projected chord error and
+   cross-section width deviation stay under a pixel tolerance, which puts
+   samples where curvature (helix turns) or the strand arrowhead taper needs
+   them and sheds them on straight stretches.
 3. A closed cross-section is swept along that frame.  The section is a
    superellipse whose exponent morphs from a rounded rectangle (helix, sheet)
    to a circle (coil), and whose half-width/half-thickness are interpolated
@@ -55,8 +59,11 @@ _EPS = 1e-8
 _WHITE = Color(255, 255, 255)
 _BLACK = Color(0, 0, 0)
 
-# Spline samples per residue along the backbone.  Uniform across a segment:
-# per-run tessellation would reintroduce seams at SS boundaries.
+# Spline samples per residue along the backbone.  This is the nominal density
+# for a segment of ordinary size; the actual per-segment density is chosen by
+# _adaptive_spline_steps (structure-size and span aware) and then refined or
+# decimated by _adaptive_centerline on projected-error grounds, so this
+# constant is the *reference* resolution rather than a hard sample count.
 _SPLINE_STEPS = 7
 # Vertices around the swept cross-section.  8 gives a flat tape a bevelled
 # edge without exploding the polygon count.
@@ -80,10 +87,17 @@ _SEC_SHEET_HT = 0.12
 _MAX_SEQ_STEP = 1
 _MAX_CA_GAP = 5.0  # Å
 
-# Arrowhead: flange half-width multiple, and the fraction of the final
-# residue interval over which the strand tapers to its point.
-_ARROW_FLANGE = 1.9
-_ARROW_TIP_FRAC = 0.06
+# Arrowhead geometry, as fractions of the sheet half-width and of the final
+# residue interval.  The strand widens to `_ARROW_FLANGE` at the penultimate
+# residue, holds that width for `_ARROW_HEAD_FRAC` of the interval (so the
+# widest ring is a real head, not one spline row), then tapers linearly to
+# `_ARROW_TIP_FRAC` at the last residue -- a constant-angle taper, the classic
+# cartoon arrow.  All three are pure internal geometry: ribbon_fit_margin and
+# the sidechain anchor solve read the same `_sample_widths` values, so the
+# canvas margin and sidechain attachment track the arrowhead automatically.
+_ARROW_FLANGE = 2.2
+_ARROW_HEAD_FRAC = 0.35
+_ARROW_TIP_FRAC = 0.08
 
 # Directional light in eye space (x right, y up, z toward viewer), matching
 # the upper-left focal point of the atom sphere gradients.
@@ -100,6 +114,19 @@ _SHADE_FLOOR = 0.15
 # makes rear chains vanish entirely.  mo.py attenuates its own fog for the same
 # reason (_MO_FOG_FACTOR).
 _RIBBON_FOG_FACTOR = 0.45
+
+# Adaptive along-ribbon tessellation (see _adaptive_centerline).  The spline is
+# built once on a fine grid (steps * _ADAPTIVE_REFINE samples per residue) and
+# decimated so that no interval's projected chord error or cross-section-width
+# deviation from linear exceeds _ADAPTIVE_TOL_PX pixels, no interval projects
+# longer than _ADAPTIVE_MAX_CHORD_PX pixels (bounds the per-quad depth spread
+# that the painter's algorithm must resolve), and every residue span keeps at
+# least _ADAPTIVE_MIN_INTERVALS_PER_RES sample intervals (floored to the
+# segment's nominal steps so huge structures never get denser than today).
+_ADAPTIVE_REFINE = 4
+_ADAPTIVE_TOL_PX = 1.5
+_ADAPTIVE_MAX_CHORD_PX = 96.0
+_ADAPTIVE_MIN_INTERVALS_PER_RES = 5
 
 _DEFAULT_RIBBON_STYLE = "gloss"
 
@@ -123,14 +150,16 @@ class RibbonStyleProfile:
 
 
 _RIBBON_STYLE_PROFILES: dict[str, RibbonStyleProfile] = {
-    # Shaded, glossy — the default.  Strong Lambert tinting, hairline outline.
+    # Shaded, glossy — the default.  Strong Lambert tinting, hairline outline
+    # just dark enough that the silhouette — including a strand's arrowhead
+    # contour — still separates from the background at small sizes.
     "gloss": RibbonStyleProfile(
         name="gloss",
         width_scale=1.0,
         thickness_scale=1.0,
         shade_gain=0.95,
-        outline_px=0.35,
-        outline_dark=0.25,
+        outline_px=0.40,
+        outline_dark=0.30,
     ),
     # Flatter, textbook look: weak shading, visible dark contour.
     "illustration": RibbonStyleProfile(
@@ -355,6 +384,121 @@ def _adaptive_spline_steps(ca_pos: np.ndarray, scale: float) -> int:
     return steps
 
 
+def _adaptive_centerline(
+    traced: np.ndarray,
+    steps: int,
+    *,
+    scale: float,
+    dims: dict[str, tuple[float, float]],
+    ss: list[str],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Error-bounded adaptive sampling of a swept centreline.
+
+    The spline is evaluated once on a fine grid (``steps * _ADAPTIVE_REFINE``
+    samples per residue) and decimated to the samples that keep the *projected*
+    geometry honest:
+
+    * every spline control point is kept, so residue boundaries -- and the SS
+      transitions and arrowhead features parameterised on them -- are anchored;
+    * an interval is refined while its projected chord error (perpendicular
+      distance of the fine polyline from the interval chord) or its
+      cross-section half-width deviation from a linear blend exceeds
+      :data:`_ADAPTIVE_TOL_PX` pixels.  Curvature and the strand arrowhead
+      taper therefore both drive density;
+    * no interval may project longer than :data:`_ADAPTIVE_MAX_CHORD_PX` px,
+      which bounds the per-quad depth spread the painter's algorithm must
+      resolve on straight, edge-on stretches;
+    * every residue span keeps at least
+      ``min(_ADAPTIVE_MIN_INTERVALS_PER_RES, steps)`` sample intervals, so
+      straight runs decimate to a sane floor instead of collapsing into one
+      giant quad, and huge structures never get *denser* than their nominal
+      uniform sampling already was.
+
+    Fully deterministic: the fine grid, the seed set, the LIFO refinement
+    order and the floor pass are all order-stable, so identical inputs give
+    identical samples.  Returns ``(centers, res_t)`` for the kept samples,
+    where ``res_t`` is the per-residue parameter used downstream to
+    interpolate the orientation frame and cross-section size.
+    """
+    n = len(traced)
+    if n < 2:
+        return traced.copy(), np.zeros(n, dtype=float)
+
+    fine = steps * _ADAPTIVE_REFINE
+    centers = _catmull_rom_3d(traced, fine)
+    m = len(centers)
+    res_t = np.linspace(0.0, n - 1, m)
+    px = centers[:, 0] * scale
+    py = centers[:, 1] * scale
+    hw_px = _sample_widths(ss, res_t, dims)[0] * scale
+
+    per_res = (m - 1) // (n - 1)  # fine samples per residue interval
+
+    # Seeds: both ends plus every control point (the spline interpolates them).
+    kept: set[int] = {0, m - 1} | {k * per_res for k in range(n)}
+    stack = sorted(kept)
+    stack = [(stack[i], stack[i + 1]) for i in range(len(stack) - 1)]
+
+    tol = _ADAPTIVE_TOL_PX
+    max_chord = _ADAPTIVE_MAX_CHORD_PX
+    while stack:
+        lo, hi = stack.pop()
+        if hi - lo <= 1:
+            continue
+        dx = px[hi] - px[lo]
+        dy = py[hi] - py[lo]
+        chord2 = dx * dx + dy * dy
+        if chord2 <= _EPS:
+            # Degenerate projected interval (coincident chord ends): split at
+            # the middle rather than trusting a division by ~zero.
+            mid = (lo + hi) // 2
+            kept.add(mid)
+            stack.append((lo, mid))
+            stack.append((mid, hi))
+            continue
+        seg = np.arange(lo + 1, hi)
+        rel = ((px[seg] - px[lo]) * dx + (py[seg] - py[lo]) * dy) / chord2
+        # Perpendicular projected distance from each fine point to the chord.
+        dev = np.abs((px[seg] - px[lo]) * dy - (py[seg] - py[lo]) * dx) / np.sqrt(chord2)
+        # Deviation of the fine half-widths from a linear blend across the
+        # interval: catches the arrowhead taper/plateau and SS transitions.
+        wdev = np.abs(hw_px[seg] - (hw_px[lo] + (hw_px[hi] - hw_px[lo]) * rel))
+        err = np.maximum(dev, wdev)
+        worst = float(err.max()) if len(err) else 0.0
+        if worst > tol or np.sqrt(chord2) > max_chord:
+            # Error-driven split at the worst fine point; when only the chord
+            # cap triggered (error ~0, e.g. a long straight run), split at the
+            # midpoint for a balanced bisection rather than peeling points.
+            if len(err) and worst > tol:
+                k = int(seg[int(np.argmax(err))])
+            else:
+                k = (lo + hi) // 2
+            kept.add(k)
+            stack.append((lo, k))
+            stack.append((k, hi))
+
+    # Floor: a minimum number of sample intervals per residue span.  The added
+    # points are spread evenly across the span in fine-index space and skip
+    # indices refinement already kept.
+    min_per_res = min(_ADAPTIVE_MIN_INTERVALS_PER_RES, steps)
+    min_pts = min_per_res + 1
+    for k in range(n - 1):
+        lo_i = k * per_res
+        hi_i = (k + 1) * per_res
+        present = [i for i in kept if lo_i <= i <= hi_i]
+        j = 1
+        while len(present) < min_pts:
+            idx = int(round(lo_i + j * (hi_i - lo_i) / (min_pts - 1)))
+            idx = min(max(idx, lo_i + 1), hi_i - 1)
+            if idx not in kept:
+                kept.add(idx)
+                present.append(idx)
+            j += 1
+
+    order = np.sort(np.fromiter(kept, dtype=int))
+    return centers[order], res_t[order]
+
+
 # ---------------------------------------------------------------------------
 # Orientation frame
 # ---------------------------------------------------------------------------
@@ -571,9 +715,13 @@ def _sample_widths(
     """Per-sample half-width / half-thickness / section exponent.
 
     Strand arrowheads are built here rather than as a separate overlapping
-    triangle: the half-width jumps to the flange at the penultimate residue and
-    tapers to a point at the last one, so the arrow is part of the same swept
-    surface and shares its depth ordering, normals and stroke.
+    triangle: the half-width jumps to the flange at the penultimate residue,
+    holds a short plateau (so the widest ring is a real arrow *head* rather
+    than a single spline row), and tapers to a point at the last one, so the
+    arrow is part of the same swept surface and shares its depth ordering,
+    normals and stroke.  The plateau/taper join continuously, and the width at
+    every integer residue parameter is unchanged by the plateau, so sidechain
+    anchors at strand termini and the canvas fit margin stay exact.
     """
     hw_r, ht_r, pe_r = _residue_section_params(ss, dims)
     hw_r, ht_r, pe_r = _smooth3(hw_r), _smooth3(ht_r), _smooth3(pe_r)
@@ -593,7 +741,12 @@ def _sample_widths(
         if not sel.any():
             continue
         frac = np.clip((res_t[sel] - base) / max(float(e) - base, _EPS), 0.0, 1.0)
-        hw[sel] = dims["E"][0] * (_ARROW_FLANGE + (_ARROW_TIP_FRAC - _ARROW_FLANGE) * frac)
+        # Piecewise: flange plateau for the first _ARROW_HEAD_FRAC of the final
+        # residue interval, then a linear (constant-angle) taper to the tip.
+        head = np.minimum(frac / max(_ARROW_HEAD_FRAC, _EPS), 1.0)
+        taper = np.clip((frac - _ARROW_HEAD_FRAC) / max(1.0 - _ARROW_HEAD_FRAC, _EPS), 0.0, 1.0)
+        width = _ARROW_FLANGE * (1.0 - head) + (_ARROW_FLANGE * (1.0 - taper) + _ARROW_TIP_FRAC * taper) * head
+        hw[sel] = dims["E"][0] * width
     return hw, ht, pe
 
 
@@ -762,10 +915,13 @@ def _segment_items(
     res_normals = _frame_normals(ca_pos, o_pos, res_tangents, ss)
 
     # --- 2. one spline for the whole segment, frame carried along ----------
+    # The centreline is sampled adaptively: uniformly on straight stretches at
+    # a per-residue floor, denser wherever projected curvature or the strand
+    # arrowhead taper demands it (see _adaptive_centerline).
     steps = _adaptive_spline_steps(traced, scale)
-    centers = _catmull_rom_3d(traced, steps)
+    dims = _section_dims(half_ribbon, loop_half, style)
+    centers, res_t = _adaptive_centerline(traced, steps, scale=scale, dims=dims, ss=ss)
     m = len(centers)
-    res_t = np.linspace(0.0, n - 1, m)
 
     normals = np.empty((m, 3))
     for k in range(3):
@@ -779,7 +935,6 @@ def _segment_items(
     binormals = _unit_rows(np.cross(tangents, normals))
 
     # --- 3. cross-section size per sample ----------------------------------
-    dims = _section_dims(half_ribbon, loop_half, style)
     hw, ht, pe = _sample_widths(ss, res_t, dims)
     u, v = _section_offsets(pe)
 
