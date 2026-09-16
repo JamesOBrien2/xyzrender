@@ -2193,7 +2193,7 @@ wheels = [
 [[package]]
 name = "xyzgraph"
 version = "1.6.15"
-source = { git = "https://github.com/JamesOBrien2/xyzgraph.git?rev=63fcbd33611e73c9476d6b581bd0b387496f879d#63fcbd33611e73c9476d6b581bd0b387496f879d" }
+source = { git = "https://github.com/JamesOBrien2/xyzgraph.git?rev=ab9ba50202a74d19ae2dab4052da2ca116e3f64f#ab9ba50202a74d19ae2dab4052da2ca116e3f64f" }
 dependencies = [
     { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -2271,7 +2271,7 @@ requires-dist = [
     { name = "shelxfile", marker = "extra == 'shelxl'" },
     { name = "vmol", marker = "extra == 'all'", specifier = ">=3.0rc7" },
     { name = "vmol", marker = "extra == 'v'", specifier = ">=3.0rc7" },
-    { name = "xyzgraph", git = "https://github.com/JamesOBrien2/xyzgraph.git?rev=63fcbd33611e73c9476d6b581bd0b387496f879d" },
+    { name = "xyzgraph", git = "https://github.com/JamesOBrien2/xyzgraph.git?rev=ab9ba50202a74d19ae2dab4052da2ca116e3f64f" },
 ]
 provides-extras = ["smi", "cif", "shelxl", "v", "all"]
 
